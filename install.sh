@@ -1,15 +1,16 @@
 
 #!/bin/bash
 # =========================================================
-#  Battery Guardian - Instalador v2.2.0
+#  Battery Guardian - Instalador v2.2.1
 # =========================================================
 #  Instala el programa en un entorno virtual (venv) en:
-#      /home/asus/Apps/Battery_Guardian/
+#      ~/Apps/Battery_Guardian/
 #  Y crea:
 #      - Icono en el escritorio (battery_guardian_icon.png)
 #      - Entrada en el menú de aplicaciones
 #      - Servicio systemd --user (arranque automático + auto-reinicio)
 #      - Enlace CLI en ~/.local/bin
+#      - Configuración de sudoers para auto-apagado sin contraseña
 #
 #  DETECTA dependencias faltantes y pide permiso para instalarlas:
 #      - python3, python3-venv, python3-tk, upower  (OBLIGATORIAS)
@@ -34,6 +35,10 @@ BIN_LINK="$HOME/.local/bin/${APP_SLUG}"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 SYSTEMD_FILE="$SYSTEMD_USER_DIR/${APP_SLUG}.service"
 
+SUDOERS_FILE="/etc/sudoers.d/battery-guardian"
+POWEROFF_PATH="/usr/sbin/poweroff"
+SYSTEMCTL_PATH="/usr/bin/systemctl"
+
 # Colores
 GREEN="\033[0;32m"
 RED="\033[0;31m"
@@ -49,7 +54,7 @@ print_info() { echo -e "   [i] $1"; }
 
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  🔋 Instalando $APP_NAME v2.2.0${NC}"
+echo -e "${BOLD}  🔋 Instalando $APP_NAME v2.2.1${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo -e "  Origen:  $PROJECT_DIR"
 echo -e "  Destino: $INSTALL_DIR"
@@ -59,13 +64,11 @@ echo ""
 # =========================================================
 #  1) DETECTAR DEPENDENCIAS
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [1/13] Comprobando dependencias del sistema...${NC}"
+echo -e "${BLUE}${BOLD}▶ [1/14] Comprobando dependencias del sistema...${NC}"
 echo ""
 
-# --- Dependencias OBLIGATORIAS ---
 MISSING_REQUIRED=()
 
-# python3
 if command -v python3 &>/dev/null; then
     print_ok "python3 → $(python3 --version 2>&1)"
 else
@@ -73,7 +76,6 @@ else
     MISSING_REQUIRED+=("python3")
 fi
 
-# python3-venv (módulo venv)
 if python3 -c "import venv" 2>/dev/null; then
     print_ok "python3-venv (módulo venv)"
 else
@@ -81,7 +83,6 @@ else
     MISSING_REQUIRED+=("python3-venv")
 fi
 
-# python3-tk (Tkinter)
 if python3 -c "import tkinter" 2>/dev/null; then
     print_ok "python3-tk (Tkinter)"
 else
@@ -89,7 +90,6 @@ else
     MISSING_REQUIRED+=("python3-tk")
 fi
 
-# upower
 if command -v upower &>/dev/null; then
     print_ok "upower"
 else
@@ -97,10 +97,8 @@ else
     MISSING_REQUIRED+=("upower")
 fi
 
-# --- Dependencia RECOMENDADA ---
 MISSING_RECOMMENDED=()
 
-# xprintidle
 if command -v xprintidle &>/dev/null; then
     print_ok "xprintidle (detección de inactividad)"
 else
@@ -108,7 +106,6 @@ else
     MISSING_RECOMMENDED+=("xprintidle")
 fi
 
-# --- Otras útiles (opcionales, informativas) ---
 echo ""
 print_info "Otras dependencias opcionales:"
 
@@ -126,6 +123,7 @@ fi
 
 echo ""
 
+
 # =========================================================
 #  2) OFRECER INSTALAR DEPENDENCIAS FALTANTES
 # =========================================================
@@ -137,21 +135,20 @@ if [ ${#ALL_MISSING[@]} -gt 0 ]; then
     echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
     echo ""
     if [ ${#MISSING_REQUIRED[@]} -gt 0 ]; then
-        echo -e "  ${RED}${BOLD}OBLIGATORIAS (sin ellas el programa no funciona):${NC}"
+        echo -e "  ${RED}${BOLD}OBLIGATORIAS:${NC}"
         for pkg in "${MISSING_REQUIRED[@]}"; do
             echo "    - $pkg"
         done
         echo ""
     fi
     if [ ${#MISSING_RECOMMENDED[@]} -gt 0 ]; then
-        echo -e "  ${YELLOW}${BOLD}RECOMENDADAS (mejoran funciones):${NC}"
+        echo -e "  ${YELLOW}${BOLD}RECOMENDADAS:${NC}"
         for pkg in "${MISSING_RECOMMENDED[@]}"; do
             echo "    - $pkg"
         done
         echo ""
     fi
 
-    # --- Si faltan obligatorias, preguntar ---
     if [ ${#MISSING_REQUIRED[@]} -gt 0 ]; then
         echo -e "  Se pueden instalar automáticamente con:"
         echo -e "      ${BOLD}sudo apt update && sudo apt install ${ALL_MISSING[*]}${NC}"
@@ -160,94 +157,58 @@ if [ ${#ALL_MISSING[@]} -gt 0 ]; then
 
         if [[ "$RESP" =~ ^[sS]$ ]]; then
             echo ""
-            echo -e "${BLUE}${BOLD}▶ [2/13] Actualizando repositorios (apt update)...${NC}"
-            if sudo apt update; then
-                print_ok "Repositorios actualizados"
-            else
-                print_fail "No se pudo actualizar los repositorios"
-                echo ""
-                read -r -p "  ¿Continuar de todas formas? [s/N]: " CONT
-                [[ "$CONT" =~ ^[sS]$ ]] || { echo "  Cancelado."; exit 1; }
-            fi
+            echo -e "${BLUE}${BOLD}▶ [2/14] Actualizando repositorios (apt update)...${NC}"
+            sudo apt update || true
+            print_ok "Repositorios actualizados"
             echo ""
 
-            echo -e "${BLUE}${BOLD}▶ [3/13] Instalando dependencias (apt install)...${NC}"
+            echo -e "${BLUE}${BOLD}▶ [3/14] Instalando dependencias (apt install)...${NC}"
             if sudo apt install -y "${ALL_MISSING[@]}"; then
                 print_ok "Dependencias instaladas"
             else
-                print_fail "Falló la instalación de dependencias"
-                echo ""
-                echo "  Instálalas manualmente:"
-                echo "      sudo apt install ${ALL_MISSING[*]}"
+                print_fail "Falló la instalación"
+                echo "  sudo apt install ${ALL_MISSING[*]}"
                 exit 1
             fi
             echo ""
-
-            # Re-verificar
-            echo "   Verificando instalación..."
-            for pkg in "${ALL_MISSING[@]}"; do
-                case "$pkg" in
-                    python3)        command -v python3 &>/dev/null && print_ok "python3" || { print_fail "python3"; exit 1; } ;;
-                    python3-venv)   python3 -c "import venv" 2>/dev/null && print_ok "python3-venv" || { print_fail "python3-venv"; exit 1; } ;;
-                    python3-tk)     python3 -c "import tkinter" 2>/dev/null && print_ok "python3-tk" || { print_fail "python3-tk"; exit 1; } ;;
-                    upower)         command -v upower &>/dev/null && print_ok "upower" || { print_fail "upower"; exit 1; } ;;
-                    xprintidle)     command -v xprintidle &>/dev/null && print_ok "xprintidle" || print_warn "xprintidle (no crítico)" ;;
-                esac
-            done
-            echo ""
-
         else
-            # El usuario dijo que no
             echo ""
-            echo -e "  ${RED}No se pueden instalar las dependencias obligatorias.${NC}"
-            echo ""
+            print_fail "No se pueden instalar las dependencias obligatorias."
             echo "  Instálalas manualmente y vuelve a ejecutar ./install.sh:"
             echo "      sudo apt update"
             echo "      sudo apt install ${ALL_MISSING[*]}"
-            echo ""
             exit 1
         fi
-
     else
-        # Solo faltan las recomendadas
-        echo -e "  Se pueden instalar automáticamente con:"
-        echo -e "      ${BOLD}sudo apt install ${MISSING_RECOMMENDED[*]}${NC}"
+        echo -e "  Se pueden instalar con: ${BOLD}sudo apt install ${MISSING_RECOMMENDED[*]}${NC}"
         echo ""
-        read -r -p "  ¿Quieres que las instale ahora? [s/N]: " RESP
+        read -r -p "  ¿Quieres instalarlas ahora? [s/N]: " RESP
 
         if [[ "$RESP" =~ ^[sS]$ ]]; then
-            echo ""
-            echo -e "${BLUE}${BOLD}▶ [2/13] Instalando dependencias recomendadas...${NC}"
             sudo apt update 2>/dev/null || true
-            if sudo apt install -y "${MISSING_RECOMMENDED[@]}"; then
-                print_ok "Dependencias recomendadas instaladas"
-            else
-                print_warn "No se pudieron instalar (el programa seguirá funcionando)"
-            fi
+            sudo apt install -y "${MISSING_RECOMMENDED[@]}" \
+                && print_ok "Instaladas" \
+                || print_warn "No se pudieron instalar"
             echo ""
         else
-            echo ""
-            print_warn "Continuando sin las dependencias recomendadas"
-            print_info "El auto-apagado por inactividad no funcionará sin xprintidle"
+            print_warn "Continuando sin ellas (auto-apagado no funcionará)"
             echo ""
         fi
     fi
-
 else
     echo -e "${GREEN}${BOLD}  ✓ Todas las dependencias están instaladas${NC}"
     echo ""
 fi
 
+
 # =========================================================
-#  4) Comprobar archivos requeridos
+#  4) Comprobar archivos del proyecto
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [4/13] Comprobando archivos del proyecto...${NC}"
+echo -e "${BLUE}${BOLD}▶ [4/14] Comprobando archivos del proyecto...${NC}"
 
 if [ ! -f "$ICON_SRC" ]; then
-    echo ""
     print_fail "No se encontró el icono:"
     echo "       $ICON_SRC"
-    echo "   Asegúrate de que 'battery_guardian_icon.png' está en la raíz del proyecto."
     exit 1
 fi
 print_ok "Icono: battery_guardian_icon.png"
@@ -270,10 +231,11 @@ else
 fi
 echo ""
 
+
 # =========================================================
 #  5) Detener instancia antigua
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [5/13] Deteniendo instancias antiguas...${NC}"
+echo -e "${BLUE}${BOLD}▶ [5/14] Deteniendo instancias antiguas...${NC}"
 if systemctl --user list-unit-files 2>/dev/null | grep -q "${APP_SLUG}.service"; then
     systemctl --user stop "${APP_SLUG}.service" 2>/dev/null || true
     systemctl --user disable "${APP_SLUG}.service" 2>/dev/null || true
@@ -283,18 +245,20 @@ sleep 1
 print_ok "Sin instancias activas"
 echo ""
 
+
 # =========================================================
 #  6) Crear carpeta de instalación
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [6/13] Creando carpeta de instalación...${NC}"
+echo -e "${BLUE}${BOLD}▶ [6/14] Creando carpeta de instalación...${NC}"
 mkdir -p "$INSTALL_DIR"
 print_ok "$INSTALL_DIR"
 echo ""
 
+
 # =========================================================
 #  7) Copiar archivos
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [7/13] Copiando archivos...${NC}"
+echo -e "${BLUE}${BOLD}▶ [7/14] Copiando archivos...${NC}"
 cp -f "$PROJECT_DIR/battery_guardian.py" "$APP_FILE"
 chmod +x "$APP_FILE"
 cp -f "$ICON_SRC" "$ICON_DST"
@@ -309,10 +273,11 @@ cp -f "$ICON_SRC" "$ICON_DST"
 print_ok "Archivos copiados"
 echo ""
 
+
 # =========================================================
 #  8) Crear entorno virtual
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [8/13] Creando entorno virtual...${NC}"
+echo -e "${BLUE}${BOLD}▶ [8/14] Creando entorno virtual...${NC}"
 [ -d "$VENV_DIR" ] && [ ! -x "$VENV_DIR/bin/python" ] && rm -rf "$VENV_DIR"
 [ ! -d "$VENV_DIR" ] && python3 -m venv "$VENV_DIR"
 [ -x "$VENV_DIR/bin/python" ] || { print_fail "venv roto (bin/python)"; exit 1; }
@@ -320,10 +285,11 @@ echo -e "${BLUE}${BOLD}▶ [8/13] Creando entorno virtual...${NC}"
 print_ok "venv: $("$VENV_DIR/bin/python" --version 2>&1)"
 echo ""
 
+
 # =========================================================
 #  9) Instalar dependencias Python en el venv
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [9/13] Instalando dependencias Python en el venv...${NC}"
+echo -e "${BLUE}${BOLD}▶ [9/14] Instalando dependencias Python en el venv...${NC}"
 "$VENV_DIR/bin/pip" install --upgrade pip --quiet
 [ -f "$INSTALL_DIR/requirements.txt" ] && \
     "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --quiet
@@ -332,10 +298,11 @@ echo -e "${BLUE}${BOLD}▶ [9/13] Instalando dependencias Python en el venv...${
 "$VENV_DIR/bin/python" -c "import PIL"     2>/dev/null && print_ok "Pillow"  || print_warn "Pillow"
 echo ""
 
+
 # =========================================================
 #  10) Crear lanzador
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [10/13] Creando lanzador...${NC}"
+echo -e "${BLUE}${BOLD}▶ [10/14] Creando lanzador...${NC}"
 cat > "$LAUNCHER" << 'LAUNCHER'
 #!/bin/bash
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -344,16 +311,16 @@ LAUNCHER
 chmod +x "$LAUNCHER"
 print_ok "$LAUNCHER"
 
-# Enlace CLI
 mkdir -p "$HOME/.local/bin"
 ln -sf "$LAUNCHER" "$BIN_LINK"
 print_ok "Enlace CLI: $BIN_LINK"
 echo ""
 
+
 # =========================================================
 #  11) Accesos directos
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [11/13] Creando accesos directos...${NC}"
+echo -e "${BLUE}${BOLD}▶ [11/14] Creando accesos directos...${NC}"
 mkdir -p "$HOME/Desktop"
 cat > "$DESKTOP_FILE" << DESKTOP
 [Desktop Entry]
@@ -378,10 +345,11 @@ update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
 print_ok "Menú: $MENU_FILE"
 echo ""
 
+
 # =========================================================
 #  12) Servicio systemd con retardo
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [12/13] Instalando servicio systemd --user...${NC}"
+echo -e "${BLUE}${BOLD}▶ [12/14] Instalando servicio systemd --user...${NC}"
 [ -f "$AUTOSTART_FILE" ] && rm -f "$AUTOSTART_FILE"
 
 mkdir -p "$SYSTEMD_USER_DIR"
@@ -394,7 +362,6 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-# Retardo de 20 s para no competir con el escritorio al arrancar
 ExecStartPre=/bin/sleep 20
 ExecStart=$LAUNCHER --hidden
 Restart=on-failure
@@ -412,10 +379,63 @@ systemctl --user start  "${APP_SLUG}.service" || true
 print_ok "Servicio systemd configurado (retardo 20 s)"
 echo ""
 
+
 # =========================================================
-#  13) Verificación final
+#  13) CONFIGURAR SUDOERS (auto-apagado sin contraseña)
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [13/13] Verificando instalación...${NC}"
+echo -e "${BLUE}${BOLD}▶ [13/14] Configurando sudoers para auto-apagado...${NC}"
+echo ""
+
+# Detectar ruta real de poweroff y systemctl
+REAL_POWEROFF="$(which poweroff 2>/dev/null || echo "/usr/sbin/poweroff")"
+REAL_SYSTEMCTL="$(which systemctl 2>/dev/null || echo "/usr/bin/systemctl")"
+CURRENT_USER="$(whoami)"
+
+print_info "Usuario: $CURRENT_USER"
+print_info "poweroff: $REAL_POWEROFF"
+print_info "systemctl: $REAL_SYSTEMCTL"
+echo ""
+
+# Contenido del archivo sudoers
+SUDOERS_CONTENT="$CURRENT_USER ALL=(ALL) NOPASSWD: $REAL_POWEROFF, $REAL_SYSTEMCTL poweroff"
+
+# Pedir confirmación
+read -r -p "  ¿Configurar sudoers para permitir auto-apagado sin contraseña? [S/n]: " RESP_SUDO
+if [[ "$RESP_SUDO" =~ ^[nN]$ ]]; then
+    print_warn "Omitido. El auto-apagado NO funcionará sin esto."
+    echo ""
+else
+    # Crear archivo temporal y validar
+    TMP_SUDOERS="$(mktemp)"
+    echo "$SUDOERS_CONTENT" > "$TMP_SUDOERS"
+
+    if ! sudo visudo -c -f "$TMP_SUDOERS" &>/dev/null; then
+        print_fail "Error de sintaxis en sudoers. No se aplica."
+        rm -f "$TMP_SUDOERS"
+    else
+        sudo cp "$TMP_SUDOERS" "$SUDOERS_FILE"
+        sudo chmod 0440 "$SUDOERS_FILE"
+        sudo chown root:root "$SUDOERS_FILE"
+        rm -f "$TMP_SUDOERS"
+
+        print_ok "Creado: $SUDOERS_FILE"
+
+        # Verificar que funciona
+        if sudo -n "$REAL_POWEROFF" --help &>/dev/null; then
+            print_ok "Verificado: sudo -n $REAL_POWEROFF funciona sin contraseña"
+        else
+            print_warn "Advertencia: la verificación falló"
+            print_info "Comprueba manualmente: sudo -n $REAL_POWEROFF --help"
+        fi
+    fi
+fi
+echo ""
+
+
+# =========================================================
+#  14) Verificación final
+# =========================================================
+echo -e "${BLUE}${BOLD}▶ [14/14] Verificando instalación...${NC}"
 echo ""
 echo "   📂 Contenido de $INSTALL_DIR:"
 ls -lh "$INSTALL_DIR" | grep -v "^total" | awk '{printf "      %-40s %s\n", $9, $5}'
@@ -425,6 +445,18 @@ if systemctl --user is-active --quiet "${APP_SLUG}.service"; then
     print_ok "Servicio systemd ACTIVO"
 else
     print_warn "Servicio NO activo (revisa: systemctl --user status ${APP_SLUG}.service)"
+fi
+
+if [ -f "$SUDOERS_FILE" ]; then
+    print_ok "Sudoers configurado: $SUDOERS_FILE"
+else
+    print_warn "Sudoers NO configurado (auto-apagado no funcionará)"
+fi
+
+if command -v xprintidle &>/dev/null; then
+    print_ok "xprintidle instalado"
+else
+    print_warn "xprintidle NO instalado (detección de inactividad limitada)"
 fi
 echo ""
 
@@ -439,17 +471,11 @@ echo -e "${BOLD}═════════════════════�
 echo -e "${GREEN}${BOLD}  ✅ Instalación completada${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo ""
-echo "  📂 Instalado en:  $INSTALL_DIR"
-echo "  📦 venv en:       $VENV_DIR"
+echo "  📂 Instalado en:   $INSTALL_DIR"
+echo "  📦 venv en:        $VENV_DIR"
+echo "  🔧 Sudoers en:     $SUDOERS_FILE"
 echo "  ⏱️  Arranque:      retrasado 20 s tras iniciar sesión"
 echo ""
-if ! command -v xprintidle &>/dev/null; then
-    echo -e "  ${YELLOW}⚠  xprintidle NO instalado${NC}"
-    echo "     El auto-apagado por inactividad NO funcionará."
-    echo "     Instálalo después con:"
-    echo "         sudo apt install xprintidle"
-    echo ""
-fi
 echo "  🖱️  Abrir el programa:"
 echo "      - Icono del escritorio"
 echo "      - Menú → '$APP_NAME'"
@@ -457,4 +483,3 @@ echo "      - Terminal:  $APP_SLUG"
 echo ""
 echo "  🗑️  Desinstalar:  $PROJECT_DIR/uninstall.sh"
 echo ""
-
