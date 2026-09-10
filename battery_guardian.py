@@ -2,25 +2,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Battery Guardian v2.2.2
+Battery Guardian v2.2.3
 =======================
 Cuida la salud de la batería de tu portátil Linux.
+
+NOVEDADES v2.2.3:
+- FIX CRÍTICO: el contador de apagado ahora dispara el apagado al llegar a 0.
+- FIX: botón "Apagar YA" ahora funciona correctamente.
+- Nuevo flag 'confirmed' separado de 'cancelled' en el diálogo.
+- Log mejorado al confirmar el apagado.
 
 NOVEDADES v2.2.2:
 - Fix del error 'latin-1' codec en el título del icono de bandeja.
 - Verificación de sudoers al arrancar: avisa si falta configuración.
-- Advertencia temprana si el auto-apagado no podrá funcionar.
 
 NOVEDADES v2.2.1:
 - Auto-apagado usa 'sudo poweroff --force --force' como método principal.
 - Múltiples métodos de apagado en cascada si el primero falla.
-- Log detallado de cada intento de apagado.
 
 NOVEDADES v2.2.0:
 - Zoom por defecto al 80 %.
 - Diálogo de apagado más grande y con texto escalable (legible).
 - Interfaz moderna con tema "clam", tarjetas y colores planos.
-- Tamaños mínimos de fuente garantizados para que todo se lea.
 
 Autor: Proyecto Battery Guardian
 Licencia: MIT
@@ -51,7 +54,7 @@ except ImportError:
 #  CONSTANTES
 # =========================================================
 APP_NAME = "Battery Guardian"
-APP_VERSION = "2.2.2"
+APP_VERSION = "2.2.3"
 SYSTEMD_SERVICE = "battery-guardian.service"
 SUDOERS_FILE = "/etc/sudoers.d/battery-guardian"
 POWEROFF_PATH = "/usr/sbin/poweroff"
@@ -502,6 +505,7 @@ class ShutdownCountdownDialog:
 
     def __init__(self, parent, seconds, minutes_idle, zoom_mgr=None):
         self.cancelled = False
+        self.confirmed = False   # NUEVO: se activa cuando el contador llega a 0
         self.remaining = seconds
         self.minutes_idle = minutes_idle
         self.zoom_mgr = zoom_mgr
@@ -604,7 +608,12 @@ class ShutdownCountdownDialog:
         self._tick()
 
     def _tick(self):
-        if self.cancelled or self.remaining <= 0:
+        # Si ya se canceló o confirmó, parar
+        if self.cancelled or self.confirmed:
+            return
+        # Si ya llegó a 0, confirmar automáticamente
+        if self.remaining <= 0:
+            self._confirm_now()
             return
         try:
             self.lbl_count.config(text=f"{self.remaining}")
@@ -625,7 +634,7 @@ class ShutdownCountdownDialog:
             pass
 
     def _confirm_now(self):
-        self.cancelled = True
+        self.confirmed = True
         try:
             self.win.grab_release()
         except Exception:
@@ -706,14 +715,18 @@ class AutoShutdownManager:
                 self.app.zoom_mgr)
             self.app.root.wait_window(dlg.win)
 
-            if dlg.cancelled:
+            if dlg.confirmed:
+                log.warning("AutoShutdown: confirmado -> apagando el equipo")
+                self._do_shutdown()
+            elif dlg.cancelled:
                 self._warning_until = time.time() + 60
                 log.info("AutoShutdown cancelado por el usuario")
             else:
-                log.warning("AutoShutdown: apagando el equipo")
+                # No debería pasar, pero por seguridad
+                log.warning("AutoShutdown: dialogo cerrado sin decision -> apagando")
                 self._do_shutdown()
         except Exception as e:
-            log.error(f"Error en diálogo de apagado: {e}")
+            log.error(f"Error en dialogo de apagado: {e}")
         finally:
             self._dialog_active = False
 
@@ -1298,7 +1311,7 @@ class TrayIcon:
             self.icon.icon = make_tray_image(level=level, charging=charging,
                                              alert=alert)
             state_txt = "cargando" if charging else "descargando"
-            # Usamos guion normal '-' en lugar de em-dash '—' para evitar
+            # Usamos guion normal '-' en lugar de em-dash para evitar
             # el error 'latin-1' codec can't encode character '\u2014'
             level_txt = f"{level}%" if level is not None else "-"
             self.icon.title = f"{APP_NAME} - {level_txt} ({state_txt})"
@@ -1552,7 +1565,7 @@ class BatteryGuardianApp:
                                    style="Muted.TLabel")
         self.lbl_media.pack(anchor="w", pady=2)
 
-        # Estado del sudoers (nuevo en v2.2.2)
+        # Estado del sudoers
         self.lbl_sudoers = ttk.Label(card3, text="Sudoers: —",
                                      style="Muted.TLabel")
         self.lbl_sudoers.pack(anchor="w", pady=2)
@@ -1684,11 +1697,16 @@ class BatteryGuardianApp:
     def _test_shutdown_warning(self):
         dlg = ShutdownCountdownDialog(self.root, 15, 10.0, self.zoom_mgr)
         self.root.wait_window(dlg.win)
-        if not dlg.cancelled:
+        if dlg.confirmed:
             messagebox.showinfo(
                 APP_NAME,
                 "Prueba finalizada.\n\n"
                 "En condiciones reales, aquí se apagaría el equipo.")
+        else:
+            messagebox.showinfo(
+                APP_NAME,
+                "Prueba cancelada.\n\n"
+                "En condiciones reales, no se apagaría el equipo.")
 
     def _save(self):
         try:
