@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -9,12 +10,11 @@ Cuida la salud de la batería de tu portátil Linux.
   * La batería llega al máximo configurado (con cargador conectado)
   * La batería baja al mínimo configurado (sin cargador)
 - La alerta NO se puede cerrar hasta realizar la acción.
-- Interfaz gráfica para activar/desactivar y regular los porcentajes.
+- Interfaz gráfica con ZOOM escalable (Ctrl +/-/0, Ctrl+rueda, botones A-/A+/A↺).
 - Información detallada: energy-full, capacity, charge-cycles.
 - Icono en la bandeja del sistema (donde WiFi, Bluetooth…).
 - Se ejecuta siempre en segundo plano. Al pulsar la X se oculta
-  en la bandeja (no se cierra). Sólo se puede salir desde el menú
-  del icono → "Salir".
+  en la bandeja. Sólo se puede salir desde el menú del icono → "Salir".
 
 Autor: Proyecto Battery Guardian
 Licencia: MIT
@@ -29,11 +29,9 @@ import logging
 import threading
 import subprocess
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, messagebox
 
-# =========================================================
-#  DEPENDENCIAS OPCIONALES (bandeja del sistema)
-# =========================================================
 try:
     import pystray
     from PIL import Image, ImageDraw
@@ -43,10 +41,10 @@ except ImportError:
 
 
 # =========================================================
-#  CONSTANTES Y RUTAS
+#  CONSTANTES
 # =========================================================
 APP_NAME = "Battery Guardian"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 SYSTEMD_SERVICE = "battery-guardian.service"
 
 HOME = os.path.expanduser("~")
@@ -64,7 +62,13 @@ DEFAULT_CONFIG = {
     "fullscreen_alert": True,
     "close_to_tray": True,
     "start_hidden": False,
+    "zoom": 1.0,
 }
+
+# Rango y paso de zoom
+ZOOM_MIN = 0.8
+ZOOM_MAX = 3.0
+ZOOM_STEP = 0.1
 
 SOUND_CANDIDATES = [
     "/usr/share/sounds/freedesktop/stereo/bell.oga",
@@ -117,22 +121,19 @@ def save_config(cfg: dict) -> None:
 
 
 # =========================================================
-#  SYSTEMD (para que no se reinicie al salir desde el menú)
+#  SYSTEMD
 # =========================================================
 def is_running_under_systemd() -> bool:
-    """Detecta si el proceso fue lanzado por systemd."""
     return bool(os.environ.get("INVOCATION_ID"))
 
 
 def notify_systemd_stop():
-    """Avisa a systemd de que no reinicie el servicio."""
     if not is_running_under_systemd():
         return
     try:
         subprocess.Popen(
             ["systemctl", "--user", "stop", SYSTEMD_SERVICE],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     except Exception:
         pass
@@ -144,8 +145,7 @@ def notify_systemd_stop():
 def find_battery_device():
     try:
         out = subprocess.check_output(
-            ["upower", "-e"], text=True, stderr=subprocess.DEVNULL
-        )
+            ["upower", "-e"], text=True, stderr=subprocess.DEVNULL)
         for line in out.splitlines():
             low = line.lower()
             if "battery" in low or "/bat" in low:
@@ -175,9 +175,8 @@ def _to_float(value_str):
     m = re.search(r"-?\d+[.,]?\d*", str(value_str))
     if not m:
         return None
-    num = m.group(0).replace(",", ".")
     try:
-        return float(num)
+        return float(m.group(0).replace(",", "."))
     except ValueError:
         return None
 
@@ -202,22 +201,17 @@ def get_battery_full_info() -> dict:
         "voltage": None, "time_to_empty": None, "time_to_full": None,
         "temperature": None,
     }
-
     device = find_battery_device()
     if not device:
         return info
     info["device"] = device
-
     try:
         out = subprocess.check_output(
-            ["upower", "-i", device], text=True, stderr=subprocess.DEVNULL
-        )
+            ["upower", "-i", device], text=True, stderr=subprocess.DEVNULL)
     except Exception as e:
         log.error(f"upower -i error: {e}")
         return info
-
     raw = _parse_upower_output(out)
-
     info["state"] = raw.get("state")
     info["percentage"] = _to_int(raw.get("percentage"))
     info["energy"] = _to_float(raw.get("energy"))
@@ -230,12 +224,9 @@ def get_battery_full_info() -> dict:
     info["temperature"] = _to_float(raw.get("temperature"))
     info["time_to_empty"] = raw.get("time to empty")
     info["time_to_full"] = raw.get("time to full")
-
     if info["capacity"] is None and info["energy_full"] and info["energy_full_design"]:
         info["capacity"] = round(
-            info["energy_full"] / info["energy_full_design"] * 100, 2
-        )
-
+            info["energy_full"] / info["energy_full_design"] * 100, 2)
     return info
 
 
@@ -252,18 +243,98 @@ def play_sound():
         if os.path.exists(path):
             try:
                 if path.endswith(".wav"):
-                    subprocess.Popen(
-                        ["aplay", "-q", path],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    )
+                    subprocess.Popen(["aplay", "-q", path],
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
                 else:
-                    subprocess.Popen(
-                        ["paplay", path],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    )
+                    subprocess.Popen(["paplay", path],
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
                 return
             except Exception as e:
                 log.warning(f"No se pudo reproducir {path}: {e}")
+
+
+# =========================================================
+#  GESTOR DE ZOOM
+# =========================================================
+class ZoomManager:
+    """
+    Gestiona el factor de zoom global de la aplicación.
+    Todas las fuentes se calculan como: base_size * zoom.
+    """
+
+    def __init__(self, root, initial_zoom=1.0):
+        self.root = root
+        self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, float(initial_zoom)))
+        self._base_fonts = {}   # nombre → tamaño base
+        self._listeners = []    # callbacks al cambiar el zoom
+
+        # Registrar fuentes base (se rellenan al construir la UI)
+        self._register_default_fonts()
+
+    def _register_default_fonts(self):
+        """Registra los tamaños base de las fuentes conocidas."""
+        # TkDefaultFont y TkTextFont afectan a casi todos los widgets ttk
+        try:
+            default_font = tkfont.nametofont("TkDefaultFont")
+            self._base_fonts["TkDefaultFont"] = default_font.actual("size")
+        except Exception:
+            self._base_fonts["TkDefaultFont"] = 10
+
+        try:
+            text_font = tkfont.nametofont("TkTextFont")
+            self._base_fonts["TkTextFont"] = text_font.actual("size")
+        except Exception:
+            self._base_fonts["TkTextFont"] = 10
+
+        try:
+            fixed_font = tkfont.nametofont("TkFixedFont")
+            self._base_fonts["TkFixedFont"] = fixed_font.actual("size")
+        except Exception:
+            self._base_fonts["TkFixedFont"] = 10
+
+    def register_font(self, name, base_size):
+        """Registrar una fuente personalizada con su tamaño base."""
+        self._base_fonts[name] = base_size
+
+    def scaled(self, base_size):
+        """Devuelve el tamaño escalado de un número base."""
+        return max(6, int(round(base_size * self.zoom)))
+
+    def apply(self):
+        """Aplica el zoom actual a todas las fuentes registradas."""
+        for name, base in self._base_fonts.items():
+            try:
+                f = tkfont.nametofont(name)
+                f.configure(size=self.scaled(base))
+            except Exception:
+                pass
+        # Notificar a los listeners (para widgets con fuentes hardcoded)
+        for cb in self._listeners:
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def add_listener(self, callback):
+        self._listeners.append(callback)
+
+    def set_zoom(self, value):
+        self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, round(value, 2)))
+        self.apply()
+
+    def zoom_in(self):
+        self.set_zoom(self.zoom + ZOOM_STEP)
+
+    def zoom_out(self):
+        self.set_zoom(self.zoom - ZOOM_STEP)
+
+    def zoom_reset(self):
+        self.set_zoom(1.0)
+
+    def percent(self):
+        return int(round(self.zoom * 100))
 
 
 # =========================================================
@@ -274,15 +345,12 @@ def make_tray_image(level=None, charging=False, alert=False):
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     border_color = "#FF5252" if alert else "#FFFFFF"
-
     draw.rectangle([4, 14, 52, 50], outline=border_color, width=3,
                    fill=(25, 25, 25, 255))
     draw.rectangle([52, 24, 58, 40], fill=border_color)
-
     if level is not None:
         inner_x0, inner_x1 = 8, 48
         inner_w = inner_x1 - inner_x0
-
         if charging:
             color = "#2196F3"
         elif level <= 20:
@@ -291,18 +359,14 @@ def make_tray_image(level=None, charging=False, alert=False):
             color = "#FF9800"
         else:
             color = "#4CAF50"
-
         w = int(inner_w * max(0, min(100, level)) / 100)
         if w > 0:
             draw.rectangle([inner_x0, 18, inner_x0 + w, 46], fill=color)
-
         if charging:
             draw.polygon(
                 [(32, 20), (26, 34), (31, 34), (28, 44), (38, 30),
                  (33, 30), (36, 20)],
-                fill="#FFF176", outline="#FFF176",
-            )
-
+                fill="#FFF176", outline="#FFF176")
     return img
 
 
@@ -311,10 +375,11 @@ def make_tray_image(level=None, charging=False, alert=False):
 # =========================================================
 class AlertWindow:
 
-    def __init__(self, parent, config, alert_type, on_resolved):
+    def __init__(self, parent, config, alert_type, on_resolved, zoom_mgr=None):
         self.config = config
         self.alert_type = alert_type
         self.on_resolved = on_resolved
+        self.zoom_mgr = zoom_mgr
         self._running = True
 
         self.win = tk.Toplevel(parent)
@@ -355,24 +420,50 @@ class AlertWindow:
             msg = (f"La batería ha bajado al {config['min_charge']}%.\n\n"
                    "Conecta el cargador para evitar un apagado inesperado.")
 
-        tk.Label(frame, text=f"⚠  {title}  ⚠",
-                 font=("Arial", 40, "bold"),
-                 fg="white", bg=bg).pack(pady=30)
-        tk.Label(frame, text=msg, font=("Arial", 24),
-                 fg="white", bg=bg, justify="center").pack(pady=20)
+        # Fuentes grandes en la alerta (también escalables)
+        z = (zoom_mgr.zoom if zoom_mgr else 1.0)
+        self.lbl_title = tk.Label(frame, text=f"⚠  {title}  ⚠",
+                                  font=("Arial", int(40 * z), "bold"),
+                                  fg="white", bg=bg)
+        self.lbl_title.pack(pady=30)
 
-        self.status_label = tk.Label(frame, text="", font=("Arial", 16),
+        self.lbl_msg = tk.Label(frame, text=msg,
+                                font=("Arial", int(24 * z)),
+                                fg="white", bg=bg, justify="center")
+        self.lbl_msg.pack(pady=20)
+
+        self.status_label = tk.Label(frame, text="",
+                                     font=("Arial", int(16 * z)),
                                      fg="#FFFFCC", bg=bg, justify="center")
         self.status_label.pack(pady=20)
 
-        tk.Label(frame,
-                 text="Esta ventana se cerrará automáticamente al realizar la acción.",
-                 font=("Arial", 14, "italic"),
-                 fg="#EEEEEE", bg=bg).pack(pady=10)
+        self.lbl_hint = tk.Label(
+            frame,
+            text="Esta ventana se cerrará automáticamente al realizar la acción.",
+            font=("Arial", int(14 * z), "italic"),
+            fg="#EEEEEE", bg=bg)
+        self.lbl_hint.pack(pady=10)
+
+        # Añadir listener de zoom para actualizar fuentes en vivo
+        if zoom_mgr:
+            zoom_mgr.add_listener(self._refresh_fonts)
 
         self._sound_loop()
         self._check_loop()
         log.info(f"Alerta mostrada: {alert_type}")
+
+    def _refresh_fonts(self):
+        """Se llama cuando cambia el zoom, para actualizar las fuentes."""
+        if not self.win.winfo_exists():
+            return
+        z = self.zoom_mgr.zoom if self.zoom_mgr else 1.0
+        try:
+            self.lbl_title.config(font=("Arial", int(40 * z), "bold"))
+            self.lbl_msg.config(font=("Arial", int(24 * z)))
+            self.status_label.config(font=("Arial", int(16 * z)))
+            self.lbl_hint.config(font=("Arial", int(14 * z), "italic"))
+        except tk.TclError:
+            pass
 
     def _sound_loop(self):
         if not self._running or not self.win.winfo_exists():
@@ -427,22 +518,40 @@ class AlertWindow:
 # =========================================================
 class InfoWindow:
 
-    def __init__(self, parent):
+    def __init__(self, parent, zoom_mgr=None):
+        self.zoom_mgr = zoom_mgr
         self.win = tk.Toplevel(parent)
         self.win.title(f"{APP_NAME} - Información de la batería")
-        self.win.geometry("620x560")
-        self.win.resizable(False, False)
+        self.win.geometry("700x620")
+        self.win.minsize(500, 400)
 
         main = ttk.Frame(self.win, padding=16)
         main.pack(fill="both", expand=True)
 
-        ttk.Label(main, text="📊  Información detallada de la batería",
-                  font=("Arial", 14, "bold")).pack(pady=(0, 12))
+        # Cabecera con controles de zoom
+        header = ttk.Frame(main)
+        header.pack(fill="x", pady=(0, 10))
 
-        self.text = tk.Text(main, wrap="word", font=("Monospace", 10),
-                            height=22, width=72, bg="#1e1e1e",
-                            fg="#e0e0e0", insertbackground="white",
-                            relief="flat")
+        self.lbl_title = tk.Label(header, text="📊  Información detallada de la batería",
+                                  font=("Arial", self._fs(14), "bold"))
+        self.lbl_title.pack(side="left")
+
+        # Botones de zoom
+        zbtns = ttk.Frame(header)
+        zbtns.pack(side="right")
+        self.lbl_zoom = ttk.Label(zbtns, text="100%")
+        self.lbl_zoom.pack(side="right", padx=4)
+        ttk.Button(zbtns, text="A+", width=4,
+                   command=self._zoom_in).pack(side="right", padx=1)
+        ttk.Button(zbtns, text="A−", width=4,
+                   command=self._zoom_out).pack(side="right", padx=1)
+        ttk.Button(zbtns, text="↺", width=3,
+                   command=self._zoom_reset).pack(side="right", padx=1)
+
+        self.text = tk.Text(main, wrap="word",
+                            font=("Monospace", self._fs(10)),
+                            height=22, bg="#1e1e1e", fg="#e0e0e0",
+                            insertbackground="white", relief="flat")
         self.text.pack(fill="both", expand=True)
 
         btns = ttk.Frame(main)
@@ -452,7 +561,59 @@ class InfoWindow:
         ttk.Button(btns, text="❌  Cerrar",
                    command=self.win.destroy).grid(row=0, column=1, padx=4)
 
+        # Bindings de zoom
+        if zoom_mgr:
+            zoom_mgr.add_listener(self._refresh_fonts)
+            self.win.bind("<Control-plus>", lambda e: self._zoom_in())
+            self.win.bind("<Control-equal>", lambda e: self._zoom_in())
+            self.win.bind("<Control-minus>", lambda e: self._zoom_out())
+            self.win.bind("<Control-0>", lambda e: self._zoom_reset())
+            self.win.bind("<Control-MouseWheel>", self._on_wheel)
+            self.win.bind("<Control-Button-4>", lambda e: self._zoom_in())
+            self.win.bind("<Control-Button-5>", lambda e: self._zoom_out())
+
+        self._update_zoom_label()
         self.refresh()
+
+    def _fs(self, base):
+        if self.zoom_mgr:
+            return self.zoom_mgr.scaled(base)
+        return base
+
+    def _zoom_in(self):
+        if self.zoom_mgr:
+            self.zoom_mgr.zoom_in()
+            self._update_zoom_label()
+
+    def _zoom_out(self):
+        if self.zoom_mgr:
+            self.zoom_mgr.zoom_out()
+            self._update_zoom_label()
+
+    def _zoom_reset(self):
+        if self.zoom_mgr:
+            self.zoom_mgr.zoom_reset()
+            self._update_zoom_label()
+
+    def _on_wheel(self, event):
+        if event.delta > 0:
+            self._zoom_in()
+        else:
+            self._zoom_out()
+
+    def _update_zoom_label(self):
+        if self.zoom_mgr:
+            self.lbl_zoom.config(text=f"{self.zoom_mgr.percent()}%")
+
+    def _refresh_fonts(self):
+        if not self.win.winfo_exists():
+            return
+        try:
+            self.lbl_title.config(font=("Arial", self._fs(14), "bold"))
+            self.text.config(font=("Monospace", self._fs(10)))
+            self._update_zoom_label()
+        except tk.TclError:
+            pass
 
     def refresh(self):
         info = get_battery_full_info()
@@ -538,7 +699,6 @@ class TrayIcon:
         self.icon = None
         self._thread = None
         self._last_image_key = None
-
         if not TRAY_AVAILABLE:
             log.warning("pystray/Pillow no disponibles: no habrá icono de bandeja.")
             return
@@ -558,15 +718,17 @@ class TrayIcon:
                              checked=lambda item: self.app.config["enabled"]),
             pystray.MenuItem("Ver informe de batería", self._on_info),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Zoom +", self._on_zoom_in),
+            pystray.MenuItem("Zoom −", self._on_zoom_out),
+            pystray.MenuItem("Zoom 100%", self._on_zoom_reset),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Salir", self._on_quit),
         )
-
         self.icon = pystray.Icon(
             name="battery_guardian",
             icon=make_tray_image(level=None),
             title=f"{APP_NAME}",
-            menu=menu,
-        )
+            menu=menu)
 
     def _on_show(self, icon=None, item=None):
         self.app.root.after(0, self.app.show_window)
@@ -579,6 +741,15 @@ class TrayIcon:
 
     def _on_info(self, icon=None, item=None):
         self.app.root.after(0, self.app.open_info_window)
+
+    def _on_zoom_in(self, icon=None, item=None):
+        self.app.root.after(0, self.app.zoom_in)
+
+    def _on_zoom_out(self, icon=None, item=None):
+        self.app.root.after(0, self.app.zoom_out)
+
+    def _on_zoom_reset(self, icon=None, item=None):
+        self.app.root.after(0, self.app.zoom_reset)
 
     def _on_quit(self, icon=None, item=None):
         self.app.root.after(0, self.app.ask_quit)
@@ -624,8 +795,9 @@ class BatteryGuardianApp:
     def __init__(self, root, start_hidden=False):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("520x740")
-        self.root.resizable(False, False)
+        self.root.geometry("560x800")
+        self.root.minsize(500, 600)
+        self.root.resizable(True, True)
         self.config = load_config()
         self.alert_active = False
         self.alert_window = None
@@ -634,17 +806,64 @@ class BatteryGuardianApp:
         self._force_quit = False
         self._start_hidden = start_hidden
 
+        # Gestor de zoom (con valor guardado en config)
+        self.zoom_mgr = ZoomManager(self.root, self.config.get("zoom", 1.0))
+
         self._build_ui()
+
+        # Aplicar zoom inicial DESPUÉS de crear la UI
+        self.zoom_mgr.apply()
+        self.zoom_mgr.add_listener(self._update_zoom_label)
+
         self._setup_tray()
+        self._bind_zoom_keys()
         self._schedule_check(1000)
 
-        # Arrancar oculto si se pidió
         if start_hidden:
             self.root.after(500, self.hide_window)
 
     def _setup_tray(self):
         self.tray = TrayIcon(self)
         self.tray.start()
+
+    # ----- Bindings de zoom -----
+    def _bind_zoom_keys(self):
+        self.root.bind("<Control-plus>", lambda e: self.zoom_in())
+        self.root.bind("<Control-equal>", lambda e: self.zoom_in())
+        self.root.bind("<Control-minus>", lambda e: self.zoom_out())
+        self.root.bind("<Control-0>", lambda e: self.zoom_reset())
+        self.root.bind("<Control-MouseWheel>", self._on_wheel)
+        self.root.bind("<Control-Button-4>", lambda e: self.zoom_in())
+        self.root.bind("<Control-Button-5>", lambda e: self.zoom_out())
+
+    def _on_wheel(self, event):
+        if event.delta > 0:
+            self.zoom_in()
+        else:
+            self.zoom_out()
+
+    # ----- API de zoom -----
+    def zoom_in(self):
+        self.zoom_mgr.zoom_in()
+        self._persist_zoom()
+
+    def zoom_out(self):
+        self.zoom_mgr.zoom_out()
+        self._persist_zoom()
+
+    def zoom_reset(self):
+        self.zoom_mgr.zoom_reset()
+        self._persist_zoom()
+
+    def _persist_zoom(self):
+        self.config["zoom"] = self.zoom_mgr.zoom
+        save_config(self.config)
+
+    def _update_zoom_label(self):
+        try:
+            self.lbl_zoom.config(text=f"{self.zoom_mgr.percent()}%")
+        except Exception:
+            pass
 
     # ----- UI -----
     def _build_ui(self):
@@ -657,12 +876,38 @@ class BatteryGuardianApp:
         main = ttk.Frame(self.root, padding=16)
         main.pack(fill="both", expand=True)
 
-        ttk.Label(main, text=f"🔋  {APP_NAME}",
-                  font=("Arial", 20, "bold")).pack(pady=(0, 2))
-        ttk.Label(main,
-                  text=f"Versión {APP_VERSION}   |   Cuida la salud de tu batería",
-                  font=("Arial", 9, "italic")).pack(pady=(0, 10))
+        # ---- Cabecera con controles de zoom ----
+        header = ttk.Frame(main)
+        header.pack(fill="x", pady=(0, 6))
 
+        self.lbl_app = tk.Label(header, text=f"🔋  {APP_NAME}",
+                                font=("Arial", 20, "bold"))
+        self.lbl_app.pack(side="left")
+
+        zbtns = ttk.Frame(header)
+        zbtns.pack(side="right")
+
+        self.lbl_zoom = ttk.Label(zbtns, text="100%", font=("Arial", 10, "bold"))
+        self.lbl_zoom.pack(side="right", padx=4)
+
+        ttk.Button(zbtns, text="A+", width=4,
+                   command=self.zoom_in).pack(side="right", padx=1)
+        ttk.Button(zbtns, text="A−", width=4,
+                   command=self.zoom_out).pack(side="right", padx=1)
+        ttk.Button(zbtns, text="↺", width=3,
+                   command=self.zoom_reset).pack(side="right", padx=1)
+
+        self.lbl_sub = tk.Label(main,
+                                text=f"Versión {APP_VERSION}   |   Cuida la salud de tu batería",
+                                font=("Arial", 9, "italic"))
+        self.lbl_sub.pack(pady=(0, 10))
+
+        # Guardar referencia para actualizar su fuente con el zoom
+        self.zoom_mgr.register_font("_lbl_app", 20)
+        self.zoom_mgr.register_font("_lbl_sub", 9)
+        self.zoom_mgr.add_listener(self._refresh_custom_fonts)
+
+        # ---- Activar / desactivar ----
         self.enabled_var = tk.BooleanVar(value=self.config["enabled"])
         ttk.Checkbutton(main, text="Activar monitoreo de batería",
                         variable=self.enabled_var,
@@ -670,11 +915,10 @@ class BatteryGuardianApp:
 
         ttk.Separator(main, orient="horizontal").pack(fill="x", pady=8)
 
-        # --- Máximo ---
+        # ---- Máximo ----
         frame_max = ttk.Frame(main)
         frame_max.pack(fill="x", pady=4)
-        ttk.Label(frame_max, text="Máximo de carga (%):",
-                  font=("Arial", 11)).pack(side="left")
+        ttk.Label(frame_max, text="Máximo de carga (%):").pack(side="left")
         self.max_var = tk.IntVar(value=self.config["max_charge"])
         spin_max = ttk.Spinbox(frame_max, from_=50, to=100,
                                textvariable=self.max_var, width=6, justify="center")
@@ -682,11 +926,10 @@ class BatteryGuardianApp:
         spin_max.bind("<FocusOut>", lambda e: self._save())
         spin_max.bind("<Return>", lambda e: self._save())
 
-        # --- Mínimo ---
+        # ---- Mínimo ----
         frame_min = ttk.Frame(main)
         frame_min.pack(fill="x", pady=4)
-        ttk.Label(frame_min, text="Mínimo de carga (%):",
-                  font=("Arial", 11)).pack(side="left")
+        ttk.Label(frame_min, text="Mínimo de carga (%):").pack(side="left")
         self.min_var = tk.IntVar(value=self.config["min_charge"])
         spin_min = ttk.Spinbox(frame_min, from_=0, to=50,
                                textvariable=self.min_var, width=6, justify="center")
@@ -694,7 +937,7 @@ class BatteryGuardianApp:
         spin_min.bind("<FocusOut>", lambda e: self._save())
         spin_min.bind("<Return>", lambda e: self._save())
 
-        # --- Opciones ---
+        # ---- Opciones ----
         self.sound_var = tk.BooleanVar(value=self.config["sound_enabled"])
         ttk.Checkbutton(main, text="Activar pitido de alerta",
                         variable=self.sound_var,
@@ -705,26 +948,23 @@ class BatteryGuardianApp:
                         variable=self.fullscreen_var,
                         command=self._save).pack(anchor="w", pady=2)
 
-        # --- Panel de información ---
+        # ---- Panel de información ----
         info_frame = ttk.LabelFrame(main, text=" Información de la batería ",
                                     padding=10)
         info_frame.pack(fill="x", pady=8)
 
-        self.lbl_state = ttk.Label(info_frame, text="Estado: —", font=("Arial", 10))
+        self.lbl_state = ttk.Label(info_frame, text="Estado: —")
         self.lbl_state.pack(anchor="w")
-        self.lbl_level = ttk.Label(info_frame, text="Nivel: —", font=("Arial", 10))
+        self.lbl_level = ttk.Label(info_frame, text="Nivel: —")
         self.lbl_level.pack(anchor="w")
-        self.lbl_energy_full = ttk.Label(info_frame, text="energy-full: —",
-                                         font=("Arial", 10))
+        self.lbl_energy_full = ttk.Label(info_frame, text="energy-full: —")
         self.lbl_energy_full.pack(anchor="w")
-        self.lbl_capacity = ttk.Label(info_frame, text="capacity (salud): —",
-                                      font=("Arial", 10))
+        self.lbl_capacity = ttk.Label(info_frame, text="capacity (salud): —")
         self.lbl_capacity.pack(anchor="w")
-        self.lbl_cycles = ttk.Label(info_frame, text="charge-cycles: —",
-                                    font=("Arial", 10))
+        self.lbl_cycles = ttk.Label(info_frame, text="charge-cycles: —")
         self.lbl_cycles.pack(anchor="w")
 
-        # --- Botones ---
+        # ---- Botones ----
         btns = ttk.Frame(main)
         btns.pack(pady=12)
 
@@ -739,8 +979,22 @@ class BatteryGuardianApp:
                    command=self.hide_window,
                    width=18).grid(row=1, column=1, padx=4, pady=3)
 
-        # La X SIEMPRE oculta en bandeja (nunca cierra)
+        # Ayuda sobre zoom
+        ttk.Label(main,
+                  text="💡 Zoom: Ctrl + rueda del ratón  ó  Ctrl + / −  ó  botones A−/A+/↺",
+                  font=("Arial", 8, "italic"),
+                  foreground="#666").pack(pady=(6, 0))
+
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_x)
+
+    def _refresh_custom_fonts(self):
+        """Actualiza las fuentes hardcoded cuando cambia el zoom."""
+        try:
+            self.lbl_app.config(font=("Arial", self.zoom_mgr.scaled(20), "bold"))
+            self.lbl_sub.config(font=("Arial", self.zoom_mgr.scaled(9), "italic"))
+            self.lbl_zoom.config(font=("Arial", self.zoom_mgr.scaled(10), "bold"))
+        except tk.TclError:
+            pass
 
     # ----- Acciones públicas -----
     def show_window(self):
@@ -762,17 +1016,16 @@ class BatteryGuardianApp:
         self.enabled_var.set(self.config["enabled"])
         save_config(self.config)
         estado = "activado" if self.config["enabled"] else "desactivado"
-        log.info(f"Monitoreo {estado} (desde bandeja)")
+        log.info(f"Monitoreo {estado}")
 
     def open_info_window(self):
         if self.info_window is not None and self.info_window.win.winfo_exists():
             self.info_window.refresh()
             self.info_window.win.lift()
             return
-        self.info_window = InfoWindow(self.root)
+        self.info_window = InfoWindow(self.root, self.zoom_mgr)
 
     def ask_quit(self):
-        """Pregunta antes de salir de verdad (sólo desde la bandeja)."""
         try:
             self.root.deiconify()
             self.root.lift()
@@ -788,8 +1041,7 @@ class BatteryGuardianApp:
 
     def quit_app(self):
         self._force_quit = True
-        log.info("Cerrando Battery Guardian (petición del usuario)")
-        # Avisar a systemd para que no lo reinicie
+        log.info("Cerrando Battery Guardian")
         notify_systemd_stop()
         try:
             if self.tray:
@@ -806,8 +1058,6 @@ class BatteryGuardianApp:
     def _on_toggle_check(self):
         self.config["enabled"] = self.enabled_var.get()
         save_config(self.config)
-        log.info(f"Monitoreo "
-                 f"{'activado' if self.config['enabled'] else 'desactivado'}")
 
     def _save(self):
         try:
@@ -826,8 +1076,10 @@ class BatteryGuardianApp:
         self.config["enabled"] = self.enabled_var.get()
         self.config["sound_enabled"] = self.sound_var.get()
         self.config["fullscreen_alert"] = self.fullscreen_var.get()
+        self.config["zoom"] = self.zoom_mgr.zoom
         save_config(self.config)
-        log.info(f"Config guardada: máx {maxv}% mín {minv}%")
+        log.info(f"Config guardada: máx {maxv}% mín {minv}% "
+                 f"zoom {self.zoom_mgr.percent()}%")
 
     def _test_alert(self):
         if self.alert_active:
@@ -836,7 +1088,6 @@ class BatteryGuardianApp:
         self._show_alert("disconnect")
 
     def _on_close_x(self):
-        """La X SIEMPRE oculta en bandeja. Nunca cierra."""
         self.hide_window()
         if not getattr(self, "_tray_hint_shown", False):
             self._tray_hint_shown = True
@@ -844,8 +1095,7 @@ class BatteryGuardianApp:
                 subprocess.Popen(
                     ["notify-send", "-i", "battery", APP_NAME,
                      "El programa sigue activo en la bandeja del sistema."],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except Exception:
                 pass
 
@@ -903,7 +1153,6 @@ class BatteryGuardianApp:
                 and state is not None
                 and level is not None
                 and now >= self._paused_until):
-
             if state in ("charging", "fully-charged") and \
                level >= self.config["max_charge"]:
                 self._show_alert("disconnect")
@@ -920,7 +1169,8 @@ class BatteryGuardianApp:
         except Exception:
             pass
         self.alert_window = AlertWindow(
-            self.root, self.config, alert_type, self._alert_resolved)
+            self.root, self.config, alert_type,
+            self._alert_resolved, self.zoom_mgr)
 
     def _alert_resolved(self):
         self.alert_active = False
@@ -963,16 +1213,11 @@ def main():
 
     log.info(f"Iniciando {APP_NAME} v{APP_VERSION} "
              f"(hidden={start_hidden}, systemd={is_running_under_systemd()})")
-    if TRAY_AVAILABLE:
-        log.info("Soporte de bandeja del sistema: SÍ")
-    else:
-        log.warning("Soporte de bandeja del sistema: NO")
 
     try:
         root = tk.Tk()
     except tk.TclError as e:
         print(f"Error: no se pudo iniciar la interfaz gráfica ({e})")
-        print("Asegúrate de tener un entorno de escritorio activo.")
         sys.exit(1)
 
     app = BatteryGuardianApp(root, start_hidden=start_hidden)
@@ -991,3 +1236,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
