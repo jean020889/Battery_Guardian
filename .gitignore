@@ -1,0 +1,44 @@
+# =========================================================
+#  Battery Guardian - .gitignore
+# =========================================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.Python
+
+# --- Entornos virtuales ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Configuración local y logs ---
+*.log
+*.pid
+config/config.json
+battery_guardian.log
+
+# --- IDEs y editores ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# --- Sistema operativo ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Archivos temporales ---
+*.tmp
+*.bak

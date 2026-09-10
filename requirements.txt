@@ -1,0 +1,13 @@
+# =========================================================
+#  Battery Guardian - Dependencias de Python
+# =========================================================
+# Estas dependencias se instalan DENTRO del entorno virtual
+# (venv) creado por install.sh. NO tocan el Python del sistema.
+#
+# Instalación manual:
+#   python3 -m venv venv
+#   ./venv/bin/pip install -r requirements.txt
+# =========================================================
+
+pystray>=0.19.5
+Pillow>=9.0.0
