@@ -1,4 +1,5 @@
 
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
 import re
@@ -25,7 +26,7 @@ except ImportError:
 #  CONSTANTES
 # =========================================================
 APP_NAME = "Battery Guardian"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 SYSTEMD_SERVICE = "battery-guardian.service"
 
 HOME = os.path.expanduser("~")
@@ -43,8 +44,7 @@ DEFAULT_CONFIG = {
     "fullscreen_alert": True,
     "close_to_tray": True,
     "start_hidden": False,
-    "zoom": 1.0,
-    # ---- Auto-apagado ----
+    "zoom": 0.8,                       # ← 80 % por defecto
     "auto_shutdown_enabled": False,
     "auto_shutdown_minutes": 10,
     "auto_shutdown_warning_seconds": 60,
@@ -52,8 +52,10 @@ DEFAULT_CONFIG = {
 }
 
 ZOOM_MIN = 0.8
-ZOOM_MAX = 3.0
+ZOOM_MAX = 2.5
 ZOOM_STEP = 0.1
+# Tamaño mínimo de fuente garantizado (para legibilidad)
+MIN_FONT_SIZE = 11
 
 SOUND_CANDIDATES = [
     "/usr/share/sounds/freedesktop/stereo/bell.oga",
@@ -62,6 +64,17 @@ SOUND_CANDIDATES = [
     "/usr/share/sounds/ubuntu/stereo/bell.ogg",
     "/usr/share/sounds/alsa/Front_Center.wav",
 ]
+
+# Paleta moderna
+COLOR_BG = "#f5f7fa"          # fondo general
+COLOR_CARD = "#ffffff"        # tarjetas
+COLOR_TEXT = "#1f2937"        # texto principal
+COLOR_MUTED = "#6b7280"       # texto secundario
+COLOR_PRIMARY = "#2563eb"     # azul principal
+COLOR_SUCCESS = "#16a34a"     # verde
+COLOR_WARN = "#f59e0b"        # ámbar
+COLOR_DANGER = "#dc2626"      # rojo
+COLOR_BORDER = "#e5e7eb"      # bordes suaves
 
 
 # =========================================================
@@ -247,11 +260,6 @@ def _cmd_exists(name):
 
 
 def get_idle_seconds():
-    """
-    Devuelve los segundos de inactividad del teclado/ratón.
-    -1 si no se puede determinar.
-    """
-    # Método 1: xprintidle (X11)
     if _cmd_exists("xprintidle"):
         try:
             out = subprocess.check_output(
@@ -260,8 +268,6 @@ def get_idle_seconds():
             return int(out.strip()) / 1000.0
         except Exception:
             pass
-
-    # Método 2: D-Bus GNOME Mutter IdleMonitor
     try:
         out = subprocess.check_output(
             ["dbus-send", "--print-reply",
@@ -274,8 +280,6 @@ def get_idle_seconds():
             return int(m.group(1)) / 1000.0
     except Exception:
         pass
-
-    # Método 3: XScreenSaver D-Bus (XFCE/MATE)
     try:
         out = subprocess.check_output(
             ["dbus-send", "--print-reply", "--dest=org.xfce.ScreenSaver",
@@ -286,14 +290,10 @@ def get_idle_seconds():
             return int(m.group(1))
     except Exception:
         pass
-
     return -1
 
 
 def is_multimedia_playing():
-    """
-    Devuelve True si hay audio o vídeo reproduciéndose.
-    """
     if _cmd_exists("pactl"):
         try:
             out = subprocess.check_output(
@@ -305,7 +305,6 @@ def is_multimedia_playing():
                 return True
         except Exception:
             pass
-
     if _cmd_exists("playerctl"):
         try:
             out = subprocess.check_output(
@@ -315,73 +314,249 @@ def is_multimedia_playing():
                 return True
         except Exception:
             pass
-
     return False
 
 
 # =========================================================
-#  DIÁLOGO DE CUENTA ATRÁS ANTES DE APAGAR
+#  ESTILOS MODERNOS
+# =========================================================
+def apply_modern_styles(root):
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except Exception:
+        pass
+
+    # Colores base
+    root.configure(bg=COLOR_BG)
+
+    style.configure(".",
+                    background=COLOR_BG,
+                    foreground=COLOR_TEXT,
+                    fieldbackground=COLOR_CARD)
+
+    style.configure("TFrame", background=COLOR_BG)
+    style.configure("Card.TFrame",
+                    background=COLOR_CARD,
+                    relief="flat",
+                    borderwidth=1)
+    style.configure("TLabel",
+                    background=COLOR_BG,
+                    foreground=COLOR_TEXT,
+                    font=("DejaVu Sans", 11))
+    style.configure("Card.TLabel",
+                    background=COLOR_CARD,
+                    foreground=COLOR_TEXT,
+                    font=("DejaVu Sans", 11))
+    style.configure("Title.TLabel",
+                    background=COLOR_BG,
+                    foreground=COLOR_TEXT,
+                    font=("DejaVu Sans", 20, "bold"))
+    style.configure("Subtitle.TLabel",
+                    background=COLOR_BG,
+                    foreground=COLOR_MUTED,
+                    font=("DejaVu Sans", 10, "italic"))
+    style.configure("Section.TLabel",
+                    background=COLOR_BG,
+                    foreground=COLOR_PRIMARY,
+                    font=("DejaVu Sans", 13, "bold"))
+    style.configure("Muted.TLabel",
+                    background=COLOR_CARD,
+                    foreground=COLOR_MUTED,
+                    font=("DejaVu Sans", 10))
+    style.configure("Info.TLabel",
+                    background=COLOR_CARD,
+                    foreground=COLOR_TEXT,
+                    font=("DejaVu Sans", 11))
+
+    # Botones
+    style.configure("TButton",
+                    font=("DejaVu Sans", 11),
+                    padding=8,
+                    relief="flat",
+                    borderwidth=0)
+    style.map("TButton",
+              background=[("active", "#dbeafe"), ("!active", COLOR_CARD)],
+              foreground=[("active", COLOR_PRIMARY), ("!active", COLOR_TEXT)])
+
+    style.configure("Primary.TButton",
+                    font=("DejaVu Sans", 11, "bold"),
+                    padding=10,
+                    relief="flat",
+                    background=COLOR_PRIMARY,
+                    foreground="white",
+                    borderwidth=0)
+    style.map("Primary.TButton",
+              background=[("active", "#1d4ed8"), ("!active", COLOR_PRIMARY)],
+              foreground=[("active", "white"), ("!active", "white")])
+
+    style.configure("Danger.TButton",
+                    font=("DejaVu Sans", 11, "bold"),
+                    padding=10,
+                    relief="flat",
+                    background=COLOR_DANGER,
+                    foreground="white",
+                    borderwidth=0)
+    style.map("Danger.TButton",
+              background=[("active", "#b91c1c"), ("!active", COLOR_DANGER)],
+              foreground=[("active", "white"), ("!active", "white")])
+
+    # Etiquetas de grupo (LabelFrame modernas)
+    style.configure("Card.TLabelframe",
+                    background=COLOR_CARD,
+                    foreground=COLOR_TEXT,
+                    borderwidth=1,
+                    relief="solid",
+                    bordercolor=COLOR_BORDER,
+                    padding=12)
+    style.configure("Card.TLabelframe.Label",
+                    background=COLOR_BG,
+                    foreground=COLOR_PRIMARY,
+                    font=("DejaVu Sans", 12, "bold"))
+
+    # Checkbuttons
+    style.configure("Card.TCheckbutton",
+                    background=COLOR_CARD,
+                    foreground=COLOR_TEXT,
+                    font=("DejaVu Sans", 11))
+    style.map("Card.TCheckbutton",
+              background=[("active", COLOR_CARD)],
+              foreground=[("active", COLOR_TEXT)])
+
+    style.configure("TCheckbutton",
+                    background=COLOR_BG,
+                    foreground=COLOR_TEXT,
+                    font=("DejaVu Sans", 11))
+    style.map("TCheckbutton",
+              background=[("active", COLOR_BG)],
+              foreground=[("active", COLOR_TEXT)])
+
+    # Separadores
+    style.configure("TSeparator", background=COLOR_BORDER)
+
+    # Spinbox
+    style.configure("TSpinbox",
+                    fieldbackground=COLOR_CARD,
+                    background=COLOR_CARD,
+                    foreground=COLOR_TEXT,
+                    arrowcolor=COLOR_TEXT,
+                    bordercolor=COLOR_BORDER,
+                    font=("DejaVu Sans", 11))
+
+    return style
+
+
+# =========================================================
+#  DIÁLOGO DE CUENTA ATRÁS (GRANDE Y LEGIBLE)
 # =========================================================
 class ShutdownCountdownDialog:
 
-    def __init__(self, parent, seconds, minutes_idle):
+    def __init__(self, parent, seconds, minutes_idle, zoom_mgr=None):
         self.cancelled = False
         self.remaining = seconds
         self.minutes_idle = minutes_idle
+        self.zoom_mgr = zoom_mgr
+
+        def fs(base):
+            if zoom_mgr:
+                return max(MIN_FONT_SIZE, zoom_mgr.scaled(base))
+            return max(MIN_FONT_SIZE, base)
 
         self.win = tk.Toplevel(parent)
         self.win.title(f"{APP_NAME} - Apagado automático")
         self.win.attributes("-topmost", True)
         self.win.protocol("WM_DELETE_WINDOW", self._cancel)
         self.win.resizable(False, False)
+        self.win.configure(bg=COLOR_CARD)
 
+        # Tamaño más generoso
+        w, h = 780, 520
         self.win.update_idletasks()
-        w, h = 560, 340
         sw = self.win.winfo_screenwidth()
         sh = self.win.winfo_screenheight()
         self.win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
 
-        bg = "#2b2b2b"
-        self.win.configure(bg=bg)
         try:
             self.win.grab_set()
         except Exception:
             pass
 
-        frame = tk.Frame(self.win, bg=bg, padx=24, pady=20)
-        frame.pack(fill="both", expand=True)
+        # --- Cabecera roja ---
+        header = tk.Frame(self.win, bg=COLOR_DANGER, height=90)
+        header.pack(fill="x")
+        header.pack_propagate(False)
 
-        tk.Label(frame, text="⚠  APAGADO AUTOMÁTICO  ⚠",
-                 font=("Arial", 22, "bold"),
-                 fg="#FFC107", bg=bg).pack(pady=(0, 10))
+        tk.Label(header,
+                 text="⚠   APAGADO AUTOMÁTICO   ⚠",
+                 font=("DejaVu Sans", fs(24), "bold"),
+                 fg="white", bg=COLOR_DANGER).pack(expand=True)
 
-        self.lbl_info = tk.Label(
-            frame,
-            text=(f"El equipo lleva {self.minutes_idle:.1f} minutos inactivo\n"
-                  f"(sin teclado, ratón ni multimedia)."),
-            font=("Arial", 12), fg="#DDDDDD", bg=bg, justify="center")
-        self.lbl_info.pack(pady=(0, 14))
+        # --- Cuerpo ---
+        body = tk.Frame(self.win, bg=COLOR_CARD, padx=40, pady=30)
+        body.pack(fill="both", expand=True)
 
-        self.lbl_count = tk.Label(
-            frame, text=f"{self.remaining} s",
-            font=("Arial", 48, "bold"),
-            fg="#FF5252", bg=bg)
-        self.lbl_count.pack(pady=6)
+        tk.Label(body,
+                 text=(f"El equipo lleva {self.minutes_idle:.1f} minutos inactivo\n"
+                       f"(sin teclado, ratón ni multimedia reproduciéndose)."),
+                 font=("DejaVu Sans", fs(14)),
+                 fg=COLOR_TEXT, bg=COLOR_CARD,
+                 justify="center").pack(pady=(0, 26))
 
-        tk.Label(frame,
-                 text="Pulsa CANCELAR si quieres seguir usando el equipo.",
-                 font=("Arial", 11, "italic"),
-                 fg="#AAAAAA", bg=bg).pack(pady=(0, 14))
+        # Contador grande y bien visible
+        count_frame = tk.Frame(body, bg=COLOR_CARD)
+        count_frame.pack(pady=6)
 
-        btn_frame = tk.Frame(frame, bg=bg)
+        tk.Label(count_frame,
+                 text="El equipo se apagará en",
+                 font=("DejaVu Sans", fs(15)),
+                 fg=COLOR_MUTED, bg=COLOR_CARD).pack()
+
+        self.lbl_count = tk.Label(count_frame,
+                                  text=f"{self.remaining}",
+                                  font=("DejaVu Sans", fs(72), "bold"),
+                                  fg=COLOR_DANGER, bg=COLOR_CARD)
+        self.lbl_count.pack()
+
+        tk.Label(count_frame,
+                 text="segundos",
+                 font=("DejaVu Sans", fs(16)),
+                 fg=COLOR_MUTED, bg=COLOR_CARD).pack()
+
+        tk.Label(body,
+                 text="Pulsa  CANCELAR  si quieres seguir usando el equipo.",
+                 font=("DejaVu Sans", fs(13), "italic"),
+                 fg=COLOR_MUTED, bg=COLOR_CARD,
+                 wraplength=700, justify="center").pack(pady=(26, 20))
+
+        # --- Botones grandes ---
+        btn_frame = tk.Frame(body, bg=COLOR_CARD)
         btn_frame.pack()
 
-        ttk.Button(btn_frame, text="❌  CANCELAR apagado",
-                   command=self._cancel, width=22).grid(row=0, column=0, padx=6)
+        cancel_btn = tk.Button(
+            btn_frame,
+            text="✕   CANCELAR apagado",
+            font=("DejaVu Sans", fs(15), "bold"),
+            bg=COLOR_SUCCESS, fg="white",
+            activebackground="#15803d", activeforeground="white",
+            relief="flat", padx=30, pady=16, borderwidth=0,
+            cursor="hand2",
+            command=self._cancel)
+        cancel_btn.grid(row=0, column=0, padx=10)
 
-        ttk.Button(btn_frame, text="⏻  Apagar YA",
-                   command=self._confirm_now,
-                   width=14).grid(row=0, column=1, padx=6)
+        now_btn = tk.Button(
+            btn_frame,
+            text="⏻   Apagar YA",
+            font=("DejaVu Sans", fs(14), "bold"),
+            bg="#6b7280", fg="white",
+            activebackground="#4b5563", activeforeground="white",
+            relief="flat", padx=24, pady=16, borderwidth=0,
+            cursor="hand2",
+            command=self._confirm_now)
+        now_btn.grid(row=0, column=1, padx=10)
+
+        # Bind Esc = cancelar, Enter = cancelar también
+        self.win.bind("<Escape>", lambda e: self._cancel())
+        self.win.bind("<Return>", lambda e: self._cancel())
 
         self._tick()
 
@@ -389,7 +564,7 @@ class ShutdownCountdownDialog:
         if self.cancelled or self.remaining <= 0:
             return
         try:
-            self.lbl_count.config(text=f"{self.remaining} s")
+            self.lbl_count.config(text=f"{self.remaining}")
         except tk.TclError:
             return
         self.remaining -= 1
@@ -422,11 +597,6 @@ class ShutdownCountdownDialog:
 #  GESTOR DE AUTO-APAGADO
 # =========================================================
 class AutoShutdownManager:
-    """
-    Vigila la inactividad del usuario en un hilo aparte.
-    Cuando se supera el umbral (sin multimedia reproduciéndose),
-    lanza el diálogo de cuenta atrás y, si no se cancela, apaga.
-    """
 
     def __init__(self, app):
         self.app = app
@@ -467,15 +637,12 @@ class AutoShutdownManager:
         if time.time() < self._warning_until:
             return
 
-        # 1) ¿Multimedia reproduciéndose?
         if is_multimedia_playing():
             log.info("AutoShutdown: multimedia activa, no se apaga")
             return
 
-        # 2) ¿Cuánto tiempo inactivo?
         idle = get_idle_seconds()
         if idle < 0:
-            log.debug("AutoShutdown: no se pudo leer idle")
             return
 
         threshold_min = float(cfg.get("auto_shutdown_minutes", 10))
@@ -483,7 +650,6 @@ class AutoShutdownManager:
         if idle < threshold_s:
             return
 
-        # 3) Lanzar diálogo
         warn_s = int(cfg.get("auto_shutdown_warning_seconds", 60))
         log.warning(f"AutoShutdown: idle={idle:.0f}s ≥ {threshold_s:.0f}s → "
                     f"cuenta atrás {warn_s}s")
@@ -492,8 +658,9 @@ class AutoShutdownManager:
 
     def _run_dialog(self, idle_s, warn_s):
         try:
-            dlg = ShutdownCountdownDialog(self.app.root, warn_s,
-                                          idle_s / 60.0)
+            dlg = ShutdownCountdownDialog(
+                self.app.root, warn_s, idle_s / 60.0,
+                self.app.zoom_mgr)
             self.app.root.wait_window(dlg.win)
 
             if dlg.cancelled:
@@ -524,7 +691,7 @@ class AutoShutdownManager:
 #  GESTOR DE ZOOM
 # =========================================================
 class ZoomManager:
-    def __init__(self, root, initial_zoom=1.0):
+    def __init__(self, root, initial_zoom=0.8):
         self.root = root
         self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, float(initial_zoom)))
         self._base_fonts = {}
@@ -532,9 +699,9 @@ class ZoomManager:
         self._register_default_fonts()
 
     def _register_default_fonts(self):
-        for name, default in (("TkDefaultFont", 10),
-                              ("TkTextFont", 10),
-                              ("TkFixedFont", 10)):
+        for name, default in (("TkDefaultFont", 11),
+                              ("TkTextFont", 11),
+                              ("TkFixedFont", 11)):
             try:
                 self._base_fonts[name] = tkfont.nametofont(name).actual("size")
             except Exception:
@@ -544,7 +711,8 @@ class ZoomManager:
         self._base_fonts[name] = base_size
 
     def scaled(self, base_size):
-        return max(6, int(round(base_size * self.zoom)))
+        # Nunca por debajo del mínimo legible
+        return max(MIN_FONT_SIZE, int(round(base_size * self.zoom)))
 
     def apply(self):
         for name, base in self._base_fonts.items():
@@ -623,6 +791,11 @@ class AlertWindow:
         self.zoom_mgr = zoom_mgr
         self._running = True
 
+        def fs(base):
+            if zoom_mgr:
+                return max(MIN_FONT_SIZE, zoom_mgr.scaled(base))
+            return max(MIN_FONT_SIZE, base)
+
         self.win = tk.Toplevel(parent)
         self.win.title(f"{APP_NAME} - ALERTA")
         self.win.attributes("-topmost", True)
@@ -660,23 +833,22 @@ class AlertWindow:
             msg = (f"La batería ha bajado al {config['min_charge']}%.\n\n"
                    "Conecta el cargador para evitar un apagado inesperado.")
 
-        z = (zoom_mgr.zoom if zoom_mgr else 1.0)
         self.lbl_title = tk.Label(frame, text=f"⚠  {title}  ⚠",
-                                  font=("Arial", int(40 * z), "bold"),
+                                  font=("DejaVu Sans", fs(40), "bold"),
                                   fg="white", bg=bg)
         self.lbl_title.pack(pady=30)
         self.lbl_msg = tk.Label(frame, text=msg,
-                                font=("Arial", int(24 * z)),
+                                font=("DejaVu Sans", fs(24)),
                                 fg="white", bg=bg, justify="center")
         self.lbl_msg.pack(pady=20)
         self.status_label = tk.Label(frame, text="",
-                                     font=("Arial", int(16 * z)),
+                                     font=("DejaVu Sans", fs(16)),
                                      fg="#FFFFCC", bg=bg, justify="center")
         self.status_label.pack(pady=20)
         self.lbl_hint = tk.Label(
             frame,
             text="Esta ventana se cerrará automáticamente al realizar la acción.",
-            font=("Arial", int(14 * z), "italic"),
+            font=("DejaVu Sans", fs(14), "italic"),
             fg="#EEEEEE", bg=bg)
         self.lbl_hint.pack(pady=10)
 
@@ -690,12 +862,13 @@ class AlertWindow:
     def _refresh_fonts(self):
         if not self.win.winfo_exists():
             return
-        z = self.zoom_mgr.zoom if self.zoom_mgr else 1.0
+        z = self.zoom_mgr
         try:
-            self.lbl_title.config(font=("Arial", int(40 * z), "bold"))
-            self.lbl_msg.config(font=("Arial", int(24 * z)))
-            self.status_label.config(font=("Arial", int(16 * z)))
-            self.lbl_hint.config(font=("Arial", int(14 * z), "italic"))
+            if z:
+                self.lbl_title.config(font=("DejaVu Sans", z.scaled(40), "bold"))
+                self.lbl_msg.config(font=("DejaVu Sans", z.scaled(24)))
+                self.status_label.config(font=("DejaVu Sans", z.scaled(16)))
+                self.lbl_hint.config(font=("DejaVu Sans", z.scaled(14), "italic"))
         except tk.TclError:
             pass
 
@@ -756,17 +929,23 @@ class InfoWindow:
         self.zoom_mgr = zoom_mgr
         self.win = tk.Toplevel(parent)
         self.win.title(f"{APP_NAME} - Información de la batería")
-        self.win.geometry("700x620")
-        self.win.minsize(500, 400)
+        self.win.geometry("760x680")
+        self.win.minsize(560, 460)
+        self.win.configure(bg=COLOR_BG)
 
-        main = ttk.Frame(self.win, padding=16)
+        def fs(base):
+            if zoom_mgr:
+                return max(MIN_FONT_SIZE, zoom_mgr.scaled(base))
+            return max(MIN_FONT_SIZE, base)
+
+        main = ttk.Frame(self.win, padding=18)
         main.pack(fill="both", expand=True)
 
         header = ttk.Frame(main)
         header.pack(fill="x", pady=(0, 10))
 
-        self.lbl_title = tk.Label(header, text="📊  Información detallada",
-                                  font=("Arial", self._fs(14), "bold"))
+        self.lbl_title = ttk.Label(header, text="📊  Información detallada",
+                                   style="Section.TLabel")
         self.lbl_title.pack(side="left")
 
         zbtns = ttk.Frame(header)
@@ -781,9 +960,10 @@ class InfoWindow:
                    command=self._zoom_reset).pack(side="right", padx=1)
 
         self.text = tk.Text(main, wrap="word",
-                            font=("Monospace", self._fs(10)),
-                            height=24, bg="#1e1e1e", fg="#e0e0e0",
-                            insertbackground="white", relief="flat")
+                            font=("DejaVu Sans Mono", fs(12)),
+                            height=24, bg="#0f172a", fg="#e5e7eb",
+                            insertbackground="white", relief="flat",
+                            padx=14, pady=12)
         self.text.pack(fill="both", expand=True)
 
         btns = ttk.Frame(main)
@@ -829,8 +1009,7 @@ class InfoWindow:
         if not self.win.winfo_exists():
             return
         try:
-            self.lbl_title.config(font=("Arial", self._fs(14), "bold"))
-            self.text.config(font=("Monospace", self._fs(10)))
+            self.text.config(font=("DejaVu Sans Mono", self._fs(12)))
             self._update_zoom_label()
         except tk.TclError:
             pass
@@ -1036,8 +1215,8 @@ class BatteryGuardianApp:
     def __init__(self, root, start_hidden=False):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("600x960")
-        self.root.minsize(540, 720)
+        self.root.geometry("660x1000")
+        self.root.minsize(600, 760)
         self.root.resizable(True, True)
         self.config = load_config()
         self.alert_active = False
@@ -1047,7 +1226,10 @@ class BatteryGuardianApp:
         self._force_quit = False
         self._start_hidden = start_hidden
 
-        self.zoom_mgr = ZoomManager(self.root, self.config.get("zoom", 1.0))
+        # Estilos modernos
+        apply_modern_styles(self.root)
+
+        self.zoom_mgr = ZoomManager(self.root, self.config.get("zoom", 0.8))
 
         self._build_ui()
         self.zoom_mgr.apply()
@@ -1057,7 +1239,6 @@ class BatteryGuardianApp:
         self._bind_zoom_keys()
         self._schedule_check(1000)
 
-        # Auto-apagado
         self.auto_shutdown = AutoShutdownManager(self)
         self.auto_shutdown.start()
 
@@ -1084,7 +1265,6 @@ class BatteryGuardianApp:
         else:
             self.zoom_out()
 
-    # ----- API de zoom -----
     def zoom_in(self):
         self.zoom_mgr.zoom_in()
         self._persist_zoom()
@@ -1109,19 +1289,13 @@ class BatteryGuardianApp:
 
     # ----- UI -----
     def _build_ui(self):
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-
         # Contenedor con scroll
         outer = ttk.Frame(self.root)
         outer.pack(fill="both", expand=True)
 
-        canvas = tk.Canvas(outer, highlightthickness=0)
+        canvas = tk.Canvas(outer, highlightthickness=0, bg=COLOR_BG)
         scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        self.scroll_frame = ttk.Frame(canvas, padding=16)
+        self.scroll_frame = ttk.Frame(canvas, padding=20)
 
         self.scroll_frame.bind(
             "<Configure>",
@@ -1139,16 +1313,17 @@ class BatteryGuardianApp:
 
         # ---- Cabecera ----
         header = ttk.Frame(main)
-        header.pack(fill="x", pady=(0, 6))
+        header.pack(fill="x", pady=(0, 4))
 
-        self.lbl_app = tk.Label(header, text=f"🔋  {APP_NAME}",
-                                font=("Arial", 20, "bold"))
+        self.lbl_app = ttk.Label(header, text=f"🔋  {APP_NAME}",
+                                 style="Title.TLabel")
         self.lbl_app.pack(side="left")
 
         zbtns = ttk.Frame(header)
         zbtns.pack(side="right")
-        self.lbl_zoom = ttk.Label(zbtns, text="100%", font=("Arial", 10, "bold"))
-        self.lbl_zoom.pack(side="right", padx=4)
+        self.lbl_zoom = ttk.Label(zbtns, text=f"{self.zoom_mgr.percent()}%",
+                                  font=("DejaVu Sans", 11, "bold"))
+        self.lbl_zoom.pack(side="right", padx=6)
         ttk.Button(zbtns, text="A+", width=4,
                    command=self.zoom_in).pack(side="right", padx=1)
         ttk.Button(zbtns, text="A−", width=4,
@@ -1156,74 +1331,85 @@ class BatteryGuardianApp:
         ttk.Button(zbtns, text="↺", width=3,
                    command=self.zoom_reset).pack(side="right", padx=1)
 
-        self.lbl_sub = tk.Label(
+        self.lbl_sub = ttk.Label(
             main,
-            text=f"Versión {APP_VERSION}   |   Cuida la salud de tu batería",
-            font=("Arial", 9, "italic"))
-        self.lbl_sub.pack(pady=(0, 10))
+            text=f"Versión {APP_VERSION}   ·   Cuida la salud de tu batería",
+            style="Subtitle.TLabel")
+        self.lbl_sub.pack(pady=(0, 14))
 
-        self.zoom_mgr.register_font("_lbl_app", 20)
-        self.zoom_mgr.register_font("_lbl_sub", 9)
-        self.zoom_mgr.add_listener(self._refresh_custom_fonts)
+        # ----------- TARJETA: Monitoreo -----------
+        card1 = ttk.LabelFrame(main, text="  Control de monitoreo  ",
+                               style="Card.TLabelframe")
+        card1.pack(fill="x", pady=8)
 
-        # ---- Activar / desactivar monitoreo ----
         self.enabled_var = tk.BooleanVar(value=self.config["enabled"])
-        ttk.Checkbutton(main, text="Activar monitoreo de batería",
+        ttk.Checkbutton(card1,
+                        text="Activar monitoreo de batería",
                         variable=self.enabled_var,
-                        command=self._on_toggle_check).pack(anchor="w", pady=4)
+                        style="Card.TCheckbutton",
+                        command=self._on_toggle_check).pack(anchor="w", pady=2)
 
-        ttk.Separator(main, orient="horizontal").pack(fill="x", pady=8)
-
-        # ---- Máximo / Mínimo ----
-        frame_max = ttk.Frame(main)
-        frame_max.pack(fill="x", pady=4)
-        ttk.Label(frame_max, text="Máximo de carga (%):").pack(side="left")
-        self.max_var = tk.IntVar(value=self.config["max_charge"])
-        spin_max = ttk.Spinbox(frame_max, from_=50, to=100,
-                               textvariable=self.max_var, width=6, justify="center")
-        spin_max.pack(side="right")
-        spin_max.bind("<FocusOut>", lambda e: self._save())
-        spin_max.bind("<Return>", lambda e: self._save())
-
-        frame_min = ttk.Frame(main)
-        frame_min.pack(fill="x", pady=4)
-        ttk.Label(frame_min, text="Mínimo de carga (%):").pack(side="left")
-        self.min_var = tk.IntVar(value=self.config["min_charge"])
-        spin_min = ttk.Spinbox(frame_min, from_=0, to=50,
-                               textvariable=self.min_var, width=6, justify="center")
-        spin_min.pack(side="right")
-        spin_min.bind("<FocusOut>", lambda e: self._save())
-        spin_min.bind("<Return>", lambda e: self._save())
-
-        # ---- Opciones batería ----
         self.sound_var = tk.BooleanVar(value=self.config["sound_enabled"])
-        ttk.Checkbutton(main, text="Activar pitido de alerta",
+        ttk.Checkbutton(card1,
+                        text="Activar pitido de alerta",
                         variable=self.sound_var,
-                        command=self._save).pack(anchor="w", pady=(8, 2))
-
-        self.fullscreen_var = tk.BooleanVar(value=self.config["fullscreen_alert"])
-        ttk.Checkbutton(main, text="Alerta a pantalla completa",
-                        variable=self.fullscreen_var,
+                        style="Card.TCheckbutton",
                         command=self._save).pack(anchor="w", pady=2)
 
-        ttk.Separator(main, orient="horizontal").pack(fill="x", pady=8)
+        self.fullscreen_var = tk.BooleanVar(value=self.config["fullscreen_alert"])
+        ttk.Checkbutton(card1,
+                        text="Alerta a pantalla completa",
+                        variable=self.fullscreen_var,
+                        style="Card.TCheckbutton",
+                        command=self._save).pack(anchor="w", pady=2)
 
-        # ---- AUTO-APAGADO ----
-        shutdown_frame = ttk.LabelFrame(
-            main, text=" ⏻  Auto-apagado por inactividad ", padding=10)
-        shutdown_frame.pack(fill="x", pady=6)
+        # ----------- TARJETA: Límites -----------
+        card2 = ttk.LabelFrame(main, text="  Límites de carga  ",
+                               style="Card.TLabelframe")
+        card2.pack(fill="x", pady=8)
+
+        f_max = ttk.Frame(card2, style="Card.TFrame")
+        f_max.pack(fill="x", pady=6)
+        ttk.Label(f_max, text="Máximo de carga (%):",
+                  style="Card.TLabel").pack(side="left")
+        self.max_var = tk.IntVar(value=self.config["max_charge"])
+        sp_max = ttk.Spinbox(f_max, from_=50, to=100,
+                             textvariable=self.max_var, width=6,
+                             justify="center")
+        sp_max.pack(side="right")
+        sp_max.bind("<FocusOut>", lambda e: self._save())
+        sp_max.bind("<Return>", lambda e: self._save())
+
+        f_min = ttk.Frame(card2, style="Card.TFrame")
+        f_min.pack(fill="x", pady=6)
+        ttk.Label(f_min, text="Mínimo de carga (%):",
+                  style="Card.TLabel").pack(side="left")
+        self.min_var = tk.IntVar(value=self.config["min_charge"])
+        sp_min = ttk.Spinbox(f_min, from_=0, to=50,
+                             textvariable=self.min_var, width=6,
+                             justify="center")
+        sp_min.pack(side="right")
+        sp_min.bind("<FocusOut>", lambda e: self._save())
+        sp_min.bind("<Return>", lambda e: self._save())
+
+        # ----------- TARJETA: Auto-apagado -----------
+        card3 = ttk.LabelFrame(main, text="  Auto-apagado por inactividad  ",
+                               style="Card.TLabelframe")
+        card3.pack(fill="x", pady=8)
 
         self.shutdown_var = tk.BooleanVar(
             value=self.config["auto_shutdown_enabled"])
-        ttk.Checkbutton(
-            shutdown_frame,
-            text="Activar auto-apagado cuando el PC esté inactivo",
-            variable=self.shutdown_var,
-            command=self._on_toggle_shutdown_check).pack(anchor="w", pady=4)
+        ttk.Checkbutton(card3,
+                        text="Activar auto-apagado cuando el PC esté inactivo",
+                        variable=self.shutdown_var,
+                        style="Card.TCheckbutton",
+                        command=self._on_toggle_shutdown_check
+                        ).pack(anchor="w", pady=4)
 
-        f1 = ttk.Frame(shutdown_frame)
-        f1.pack(fill="x", pady=4)
-        ttk.Label(f1, text="Apagar tras (minutos inactivo):").pack(side="left")
+        f1 = ttk.Frame(card3, style="Card.TFrame")
+        f1.pack(fill="x", pady=6)
+        ttk.Label(f1, text="Apagar tras (minutos inactivo):",
+                  style="Card.TLabel").pack(side="left")
         self.shutdown_min_var = tk.IntVar(
             value=self.config["auto_shutdown_minutes"])
         sp1 = ttk.Spinbox(f1, from_=1, to=240,
@@ -1233,9 +1419,10 @@ class BatteryGuardianApp:
         sp1.bind("<FocusOut>", lambda e: self._save())
         sp1.bind("<Return>", lambda e: self._save())
 
-        f2 = ttk.Frame(shutdown_frame)
-        f2.pack(fill="x", pady=4)
-        ttk.Label(f2, text="Aviso previo (segundos):").pack(side="left")
+        f2 = ttk.Frame(card3, style="Card.TFrame")
+        f2.pack(fill="x", pady=6)
+        ttk.Label(f2, text="Aviso previo (segundos):",
+                  style="Card.TLabel").pack(side="left")
         self.shutdown_warn_var = tk.IntVar(
             value=self.config["auto_shutdown_warning_seconds"])
         sp2 = ttk.Spinbox(f2, from_=0, to=600,
@@ -1245,73 +1432,65 @@ class BatteryGuardianApp:
         sp2.bind("<FocusOut>", lambda e: self._save())
         sp2.bind("<Return>", lambda e: self._save())
 
-        self.lbl_idle = ttk.Label(shutdown_frame, text="Inactividad: —",
-                                  foreground="#555")
+        self.lbl_idle = ttk.Label(card3, text="Inactividad: —",
+                                  style="Muted.TLabel")
         self.lbl_idle.pack(anchor="w", pady=(8, 2))
 
-        self.lbl_media = ttk.Label(shutdown_frame, text="Multimedia: —",
-                                   foreground="#555")
+        self.lbl_media = ttk.Label(card3, text="Multimedia: —",
+                                   style="Muted.TLabel")
         self.lbl_media.pack(anchor="w", pady=2)
 
-        ttk.Label(
-            shutdown_frame,
-            text=("💡 No apaga si hay multimedia reproduciéndose.\n"
-                  "   Muestra aviso con cuenta atrás y opción Cancelar."),
-            font=("Arial", 8, "italic"), foreground="#666",
-            justify="left").pack(anchor="w", pady=(6, 0))
+        ttk.Label(card3,
+                  text=("💡 No apaga si hay multimedia reproduciéndose.\n"
+                        "   Muestra aviso con cuenta atrás y opción Cancelar."),
+                  style="Muted.TLabel",
+                  justify="left").pack(anchor="w", pady=(8, 4))
 
-        ttk.Button(shutdown_frame, text="🧪  Probar aviso de apagado",
+        ttk.Button(card3, text="🧪  Probar aviso de apagado",
                    command=self._test_shutdown_warning
-                   ).pack(anchor="w", pady=(8, 0))
+                   ).pack(anchor="w", pady=(6, 2))
 
-        ttk.Separator(main, orient="horizontal").pack(fill="x", pady=8)
+        # ----------- TARJETA: Información batería -----------
+        card4 = ttk.LabelFrame(main, text="  Información de la batería  ",
+                               style="Card.TLabelframe")
+        card4.pack(fill="x", pady=8)
 
-        # ---- Panel de información ----
-        info_frame = ttk.LabelFrame(main, text=" Información de la batería ",
-                                    padding=10)
-        info_frame.pack(fill="x", pady=6)
+        self.lbl_state = ttk.Label(card4, text="Estado: —", style="Info.TLabel")
+        self.lbl_state.pack(anchor="w", pady=1)
+        self.lbl_level = ttk.Label(card4, text="Nivel: —", style="Info.TLabel")
+        self.lbl_level.pack(anchor="w", pady=1)
+        self.lbl_energy_full = ttk.Label(card4, text="energy-full: —",
+                                         style="Info.TLabel")
+        self.lbl_energy_full.pack(anchor="w", pady=1)
+        self.lbl_capacity = ttk.Label(card4, text="capacity (salud): —",
+                                      style="Info.TLabel")
+        self.lbl_capacity.pack(anchor="w", pady=1)
+        self.lbl_cycles = ttk.Label(card4, text="charge-cycles: —",
+                                    style="Info.TLabel")
+        self.lbl_cycles.pack(anchor="w", pady=1)
 
-        self.lbl_state = ttk.Label(info_frame, text="Estado: —")
-        self.lbl_state.pack(anchor="w")
-        self.lbl_level = ttk.Label(info_frame, text="Nivel: —")
-        self.lbl_level.pack(anchor="w")
-        self.lbl_energy_full = ttk.Label(info_frame, text="energy-full: —")
-        self.lbl_energy_full.pack(anchor="w")
-        self.lbl_capacity = ttk.Label(info_frame, text="capacity (salud): —")
-        self.lbl_capacity.pack(anchor="w")
-        self.lbl_cycles = ttk.Label(info_frame, text="charge-cycles: —")
-        self.lbl_cycles.pack(anchor="w")
-
-        # ---- Botones ----
+        # ----------- Botones inferiores -----------
         btns = ttk.Frame(main)
-        btns.pack(pady=12)
+        btns.pack(pady=16)
 
-        ttk.Button(btns, text="💾  Guardar", command=self._save,
-                   width=14).grid(row=0, column=0, padx=4, pady=3)
+        ttk.Button(btns, text="💾  Guardar", style="Primary.TButton",
+                   command=self._save, width=16
+                   ).grid(row=0, column=0, padx=5, pady=4)
         ttk.Button(btns, text="📊  Ver informe completo",
-                   command=self.open_info_window,
-                   width=22).grid(row=0, column=1, padx=4, pady=3)
+                   command=self.open_info_window, width=24
+                   ).grid(row=0, column=1, padx=5, pady=4)
         ttk.Button(btns, text="🧪  Probar alerta batería",
-                   command=self._test_alert,
-                   width=18).grid(row=1, column=0, padx=4, pady=3)
+                   command=self._test_alert, width=22
+                   ).grid(row=1, column=0, padx=5, pady=4)
         ttk.Button(btns, text="Ocultar en bandeja",
-                   command=self.hide_window,
-                   width=18).grid(row=1, column=1, padx=4, pady=3)
+                   command=self.hide_window, width=20
+                   ).grid(row=1, column=1, padx=5, pady=4)
 
         ttk.Label(main,
-                  text="💡 Zoom: Ctrl + rueda del ratón  ó  Ctrl + / −  ó  botones A−/A+/↺",
-                  font=("Arial", 8, "italic"),
-                  foreground="#666").pack(pady=(6, 12))
+                  text="💡 Zoom: Ctrl + rueda del ratón  ·  Ctrl + / −  ·  botones A−/A+/↺",
+                  style="Subtitle.TLabel").pack(pady=(4, 14))
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_x)
-
-    def _refresh_custom_fonts(self):
-        try:
-            self.lbl_app.config(font=("Arial", self.zoom_mgr.scaled(20), "bold"))
-            self.lbl_sub.config(font=("Arial", self.zoom_mgr.scaled(9), "italic"))
-            self.lbl_zoom.config(font=("Arial", self.zoom_mgr.scaled(10), "bold"))
-        except tk.TclError:
-            pass
 
     # ----- Acciones públicas -----
     def show_window(self):
@@ -1332,14 +1511,12 @@ class BatteryGuardianApp:
         self.config["enabled"] = not self.config["enabled"]
         self.enabled_var.set(self.config["enabled"])
         save_config(self.config)
-        log.info(f"Monitoreo {'activado' if self.config['enabled'] else 'desactivado'}")
 
     def toggle_auto_shutdown(self):
         self.config["auto_shutdown_enabled"] = \
             not self.config.get("auto_shutdown_enabled", False)
         self.shutdown_var.set(self.config["auto_shutdown_enabled"])
         save_config(self.config)
-        log.info(f"Auto-apagado {'activado' if self.config['auto_shutdown_enabled'] else 'desactivado'}")
 
     def open_info_window(self):
         if self.info_window is not None and self.info_window.win.winfo_exists():
@@ -1390,12 +1567,9 @@ class BatteryGuardianApp:
     def _on_toggle_shutdown_check(self):
         self.config["auto_shutdown_enabled"] = self.shutdown_var.get()
         save_config(self.config)
-        log.info(f"Auto-apagado "
-                 f"{'activado' if self.config['auto_shutdown_enabled'] else 'desactivado'}")
 
     def _test_shutdown_warning(self):
-        """Muestra el diálogo de aviso de apagado sin apagar realmente."""
-        dlg = ShutdownCountdownDialog(self.root, 15, 10.0)
+        dlg = ShutdownCountdownDialog(self.root, 15, 10.0, self.zoom_mgr)
         self.root.wait_window(dlg.win)
         if not dlg.cancelled:
             messagebox.showinfo(
@@ -1431,10 +1605,6 @@ class BatteryGuardianApp:
         self.config["auto_shutdown_minutes"] = shut_min
         self.config["auto_shutdown_warning_seconds"] = shut_warn
         save_config(self.config)
-        log.info(f"Config guardada: máx {maxv}% mín {minv}% "
-                 f"zoom {self.zoom_mgr.percent()}% "
-                 f"auto-apagado={self.config['auto_shutdown_enabled']} "
-                 f"({shut_min} min)")
 
     def _test_alert(self):
         if self.alert_active:
@@ -1454,7 +1624,7 @@ class BatteryGuardianApp:
             except Exception:
                 pass
 
-    # ----- Bucle de chequeo batería -----
+    # ----- Bucle de chequeo -----
     def _schedule_check(self, delay_ms):
         self.root.after(delay_ms, self._check_battery)
 
@@ -1498,7 +1668,6 @@ class BatteryGuardianApp:
                 self.lbl_cycles.config(
                     text="charge-cycles: No reportado por el hardware")
 
-        # Info inactividad
         idle = get_idle_seconds()
         if idle >= 0:
             m = int(idle // 60)
@@ -1618,4 +1787,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
