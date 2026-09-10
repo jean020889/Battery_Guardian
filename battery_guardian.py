@@ -1,6 +1,26 @@
 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Battery Guardian v2.2.1
+=======================
+Cuida la salud de la batería de tu portátil Linux.
+
+NOVEDADES v2.2.1:
+- Auto-apagado usa 'sudo poweroff --force --force' como método principal.
+- Múltiples métodos de apagado en cascada si el primero falla.
+- Log detallado de cada intento de apagado.
+
+NOVEDADES v2.2.0:
+- Zoom por defecto al 80 %.
+- Diálogo de apagado más grande y con texto escalable (legible).
+- Interfaz moderna con tema "clam", tarjetas y colores planos.
+- Tamaños mínimos de fuente garantizados para que todo se lea.
+
+Autor: Proyecto Battery Guardian
+Licencia: MIT
+"""
+
 import os
 import re
 import sys
@@ -26,7 +46,7 @@ except ImportError:
 #  CONSTANTES
 # =========================================================
 APP_NAME = "Battery Guardian"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 SYSTEMD_SERVICE = "battery-guardian.service"
 
 HOME = os.path.expanduser("~")
@@ -44,7 +64,7 @@ DEFAULT_CONFIG = {
     "fullscreen_alert": True,
     "close_to_tray": True,
     "start_hidden": False,
-    "zoom": 0.8,                       # ← 80 % por defecto
+    "zoom": 0.8,
     "auto_shutdown_enabled": False,
     "auto_shutdown_minutes": 10,
     "auto_shutdown_warning_seconds": 60,
@@ -54,7 +74,6 @@ DEFAULT_CONFIG = {
 ZOOM_MIN = 0.8
 ZOOM_MAX = 2.5
 ZOOM_STEP = 0.1
-# Tamaño mínimo de fuente garantizado (para legibilidad)
 MIN_FONT_SIZE = 11
 
 SOUND_CANDIDATES = [
@@ -65,16 +84,15 @@ SOUND_CANDIDATES = [
     "/usr/share/sounds/alsa/Front_Center.wav",
 ]
 
-# Paleta moderna
-COLOR_BG = "#f5f7fa"          # fondo general
-COLOR_CARD = "#ffffff"        # tarjetas
-COLOR_TEXT = "#1f2937"        # texto principal
-COLOR_MUTED = "#6b7280"       # texto secundario
-COLOR_PRIMARY = "#2563eb"     # azul principal
-COLOR_SUCCESS = "#16a34a"     # verde
-COLOR_WARN = "#f59e0b"        # ámbar
-COLOR_DANGER = "#dc2626"      # rojo
-COLOR_BORDER = "#e5e7eb"      # bordes suaves
+COLOR_BG = "#f5f7fa"
+COLOR_CARD = "#ffffff"
+COLOR_TEXT = "#1f2937"
+COLOR_MUTED = "#6b7280"
+COLOR_PRIMARY = "#2563eb"
+COLOR_SUCCESS = "#16a34a"
+COLOR_WARN = "#f59e0b"
+COLOR_DANGER = "#dc2626"
+COLOR_BORDER = "#e5e7eb"
 
 
 # =========================================================
@@ -327,7 +345,6 @@ def apply_modern_styles(root):
     except Exception:
         pass
 
-    # Colores base
     root.configure(bg=COLOR_BG)
 
     style.configure(".",
@@ -369,7 +386,6 @@ def apply_modern_styles(root):
                     foreground=COLOR_TEXT,
                     font=("DejaVu Sans", 11))
 
-    # Botones
     style.configure("TButton",
                     font=("DejaVu Sans", 11),
                     padding=8,
@@ -401,7 +417,6 @@ def apply_modern_styles(root):
               background=[("active", "#b91c1c"), ("!active", COLOR_DANGER)],
               foreground=[("active", "white"), ("!active", "white")])
 
-    # Etiquetas de grupo (LabelFrame modernas)
     style.configure("Card.TLabelframe",
                     background=COLOR_CARD,
                     foreground=COLOR_TEXT,
@@ -414,7 +429,6 @@ def apply_modern_styles(root):
                     foreground=COLOR_PRIMARY,
                     font=("DejaVu Sans", 12, "bold"))
 
-    # Checkbuttons
     style.configure("Card.TCheckbutton",
                     background=COLOR_CARD,
                     foreground=COLOR_TEXT,
@@ -431,10 +445,8 @@ def apply_modern_styles(root):
               background=[("active", COLOR_BG)],
               foreground=[("active", COLOR_TEXT)])
 
-    # Separadores
     style.configure("TSeparator", background=COLOR_BORDER)
 
-    # Spinbox
     style.configure("TSpinbox",
                     fieldbackground=COLOR_CARD,
                     background=COLOR_CARD,
@@ -469,7 +481,6 @@ class ShutdownCountdownDialog:
         self.win.resizable(False, False)
         self.win.configure(bg=COLOR_CARD)
 
-        # Tamaño más generoso
         w, h = 780, 520
         self.win.update_idletasks()
         sw = self.win.winfo_screenwidth()
@@ -481,7 +492,6 @@ class ShutdownCountdownDialog:
         except Exception:
             pass
 
-        # --- Cabecera roja ---
         header = tk.Frame(self.win, bg=COLOR_DANGER, height=90)
         header.pack(fill="x")
         header.pack_propagate(False)
@@ -491,7 +501,6 @@ class ShutdownCountdownDialog:
                  font=("DejaVu Sans", fs(24), "bold"),
                  fg="white", bg=COLOR_DANGER).pack(expand=True)
 
-        # --- Cuerpo ---
         body = tk.Frame(self.win, bg=COLOR_CARD, padx=40, pady=30)
         body.pack(fill="both", expand=True)
 
@@ -502,7 +511,6 @@ class ShutdownCountdownDialog:
                  fg=COLOR_TEXT, bg=COLOR_CARD,
                  justify="center").pack(pady=(0, 26))
 
-        # Contador grande y bien visible
         count_frame = tk.Frame(body, bg=COLOR_CARD)
         count_frame.pack(pady=6)
 
@@ -528,7 +536,6 @@ class ShutdownCountdownDialog:
                  fg=COLOR_MUTED, bg=COLOR_CARD,
                  wraplength=700, justify="center").pack(pady=(26, 20))
 
-        # --- Botones grandes ---
         btn_frame = tk.Frame(body, bg=COLOR_CARD)
         btn_frame.pack()
 
@@ -554,7 +561,6 @@ class ShutdownCountdownDialog:
             command=self._confirm_now)
         now_btn.grid(row=0, column=1, padx=10)
 
-        # Bind Esc = cancelar, Enter = cancelar también
         self.win.bind("<Escape>", lambda e: self._cancel())
         self.win.bind("<Return>", lambda e: self._cancel())
 
@@ -675,16 +681,58 @@ class AutoShutdownManager:
             self._dialog_active = False
 
     def _do_shutdown(self):
-        for cmd in (["systemctl", "poweroff"],
-                    ["shutdown", "-h", "now"],
-                    ["/sbin/poweroff"]):
+        """
+        Apaga el equipo usando varios métodos en cascada:
+        1. sudo -n /usr/sbin/poweroff --force --force   (sudoers configurado)
+        2. sudo -n /sbin/poweroff --force --force
+        3. sudo -n poweroff --force --force
+        4. pkexec poweroff --force --force              (pide contraseña gráfica)
+        5. sudo -n systemctl poweroff --force --force
+        6. systemctl poweroff --force --force
+        7. sudo -n shutdown -h now
+        8. shutdown -h now
+        """
+        methods = [
+            ["sudo", "-n", "/usr/sbin/poweroff", "--force", "--force"],
+            ["sudo", "-n", "/sbin/poweroff", "--force", "--force"],
+            ["sudo", "-n", "poweroff", "--force", "--force"],
+            ["pkexec", "poweroff", "--force", "--force"],
+            ["sudo", "-n", "systemctl", "poweroff", "--force", "--force"],
+            ["systemctl", "poweroff", "--force", "--force"],
+            ["sudo", "-n", "shutdown", "-h", "now"],
+            ["shutdown", "-h", "now"],
+        ]
+
+        for i, cmd in enumerate(methods, 1):
             try:
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
-                return
-            except Exception:
+                log.warning(f"AutoShutdown: intentando método {i}: {' '.join(cmd)}")
+                result = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=10,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    log.warning(f"AutoShutdown: apagado iniciado con {' '.join(cmd)}")
+                    return
+                else:
+                    err = result.stderr.strip() if result.stderr else "(sin stderr)"
+                    log.warning(
+                        f"AutoShutdown: método {i} falló "
+                        f"(rc={result.returncode}): {err}")
+            except FileNotFoundError:
+                log.warning(f"AutoShutdown: comando no encontrado: {cmd[0]}")
                 continue
-        log.error("No se pudo ejecutar el apagado con ningún comando")
+            except subprocess.TimeoutExpired:
+                log.warning(f"AutoShutdown: timeout con {' '.join(cmd)}")
+                continue
+            except Exception as e:
+                log.warning(f"AutoShutdown: error con {' '.join(cmd)}: {e}")
+                continue
+
+        log.error("AutoShutdown: NINGÚN método de apagado funcionó.")
+        log.error("AutoShutdown: configura sudoers con: sudo cat /etc/sudoers.d/battery-guardian")
 
 
 # =========================================================
@@ -711,7 +759,6 @@ class ZoomManager:
         self._base_fonts[name] = base_size
 
     def scaled(self, base_size):
-        # Nunca por debajo del mínimo legible
         return max(MIN_FONT_SIZE, int(round(base_size * self.zoom)))
 
     def apply(self):
@@ -1226,7 +1273,6 @@ class BatteryGuardianApp:
         self._force_quit = False
         self._start_hidden = start_hidden
 
-        # Estilos modernos
         apply_modern_styles(self.root)
 
         self.zoom_mgr = ZoomManager(self.root, self.config.get("zoom", 0.8))
@@ -1249,7 +1295,6 @@ class BatteryGuardianApp:
         self.tray = TrayIcon(self)
         self.tray.start()
 
-    # ----- Bindings de zoom -----
     def _bind_zoom_keys(self):
         self.root.bind("<Control-plus>", lambda e: self.zoom_in())
         self.root.bind("<Control-equal>", lambda e: self.zoom_in())
@@ -1287,9 +1332,7 @@ class BatteryGuardianApp:
         except Exception:
             pass
 
-    # ----- UI -----
     def _build_ui(self):
-        # Contenedor con scroll
         outer = ttk.Frame(self.root)
         outer.pack(fill="both", expand=True)
 
@@ -1311,7 +1354,6 @@ class BatteryGuardianApp:
 
         main = self.scroll_frame
 
-        # ---- Cabecera ----
         header = ttk.Frame(main)
         header.pack(fill="x", pady=(0, 4))
 
@@ -1337,7 +1379,6 @@ class BatteryGuardianApp:
             style="Subtitle.TLabel")
         self.lbl_sub.pack(pady=(0, 14))
 
-        # ----------- TARJETA: Monitoreo -----------
         card1 = ttk.LabelFrame(main, text="  Control de monitoreo  ",
                                style="Card.TLabelframe")
         card1.pack(fill="x", pady=8)
@@ -1363,7 +1404,6 @@ class BatteryGuardianApp:
                         style="Card.TCheckbutton",
                         command=self._save).pack(anchor="w", pady=2)
 
-        # ----------- TARJETA: Límites -----------
         card2 = ttk.LabelFrame(main, text="  Límites de carga  ",
                                style="Card.TLabelframe")
         card2.pack(fill="x", pady=8)
@@ -1392,7 +1432,6 @@ class BatteryGuardianApp:
         sp_min.bind("<FocusOut>", lambda e: self._save())
         sp_min.bind("<Return>", lambda e: self._save())
 
-        # ----------- TARJETA: Auto-apagado -----------
         card3 = ttk.LabelFrame(main, text="  Auto-apagado por inactividad  ",
                                style="Card.TLabelframe")
         card3.pack(fill="x", pady=8)
@@ -1450,7 +1489,6 @@ class BatteryGuardianApp:
                    command=self._test_shutdown_warning
                    ).pack(anchor="w", pady=(6, 2))
 
-        # ----------- TARJETA: Información batería -----------
         card4 = ttk.LabelFrame(main, text="  Información de la batería  ",
                                style="Card.TLabelframe")
         card4.pack(fill="x", pady=8)
@@ -1469,7 +1507,6 @@ class BatteryGuardianApp:
                                     style="Info.TLabel")
         self.lbl_cycles.pack(anchor="w", pady=1)
 
-        # ----------- Botones inferiores -----------
         btns = ttk.Frame(main)
         btns.pack(pady=16)
 
@@ -1492,7 +1529,6 @@ class BatteryGuardianApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_x)
 
-    # ----- Acciones públicas -----
     def show_window(self):
         try:
             self.root.deiconify()
@@ -1559,7 +1595,6 @@ class BatteryGuardianApp:
         except Exception:
             pass
 
-    # ----- Callbacks -----
     def _on_toggle_check(self):
         self.config["enabled"] = self.enabled_var.get()
         save_config(self.config)
@@ -1624,7 +1659,6 @@ class BatteryGuardianApp:
             except Exception:
                 pass
 
-    # ----- Bucle de chequeo -----
     def _schedule_check(self, delay_ms):
         self.root.after(delay_ms, self._check_battery)
 
@@ -1787,5 +1821,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
