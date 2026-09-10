@@ -23,12 +23,15 @@ Guía paso a paso para instalar **Battery Guardian v1.3.0** en Linux Mint
 
 ```bash
 python3 --version
+```
 Debe devolver Python 3.8 o superior.
 
 2. Instalar dependencias del sistema
-bash
+```bash
 sudo apt update
 sudo apt install python3 python3-venv python3-tk upower
+```
+
 💡 Estas son las únicas dependencias del sistema. Todo lo demás
 (pystray, Pillow) se instala dentro del entorno virtual del
 programa, sin tocar el sistema.
@@ -46,12 +49,16 @@ Battery_Guardian/
 └── ...
 🚀 Instalación
 Paso 1 — Abrir la terminal
-bash
+
+```bash
 cd "/home/asus/Documentos/INFORMATICA/PROGRAMACIÓN/PROYECTOS/Battery_Guardian"
+```
 Paso 2 — Ejecutar el instalador
-bash
+
+```bash
 chmod +x install.sh uninstall.sh
 ./install.sh
+```
 Paso 3 — Esperar a que termine
 El instalador hace 11 pasos automáticamente:
 
