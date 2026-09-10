@@ -1,0 +1,14 @@
+[Unit]
+Description=Battery Guardian - Cuida la batería del portátil
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/Documentos/INFORMATICA/PROGRAMACIÓN/PROYECTOS/Battery_Guardian/battery_guardian.py
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target
