@@ -2,9 +2,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Battery Guardian v2.2.1
+Battery Guardian v2.2.2
 =======================
 Cuida la salud de la batería de tu portátil Linux.
+
+NOVEDADES v2.2.2:
+- Fix del error 'latin-1' codec en el título del icono de bandeja.
+- Verificación de sudoers al arrancar: avisa si falta configuración.
+- Advertencia temprana si el auto-apagado no podrá funcionar.
 
 NOVEDADES v2.2.1:
 - Auto-apagado usa 'sudo poweroff --force --force' como método principal.
@@ -46,8 +51,10 @@ except ImportError:
 #  CONSTANTES
 # =========================================================
 APP_NAME = "Battery Guardian"
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2"
 SYSTEMD_SERVICE = "battery-guardian.service"
+SUDOERS_FILE = "/etc/sudoers.d/battery-guardian"
+POWEROFF_PATH = "/usr/sbin/poweroff"
 
 HOME = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(HOME, ".config", "battery_guardian")
@@ -152,6 +159,28 @@ def notify_systemd_stop():
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
+
+
+# =========================================================
+#  SUDOERS (verificación de auto-apagado)
+# =========================================================
+def check_sudoers_configured() -> bool:
+    """
+    Comprueba si el archivo sudoers existe y si `sudo -n poweroff --help`
+    funciona sin pedir contraseña.
+    """
+    if not os.path.exists(SUDOERS_FILE):
+        return False
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", POWEROFF_PATH, "--help"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 # =========================================================
@@ -385,6 +414,14 @@ def apply_modern_styles(root):
                     background=COLOR_CARD,
                     foreground=COLOR_TEXT,
                     font=("DejaVu Sans", 11))
+    style.configure("Warn.TLabel",
+                    background=COLOR_CARD,
+                    foreground=COLOR_DANGER,
+                    font=("DejaVu Sans", 10, "bold"))
+    style.configure("Ok.TLabel",
+                    background=COLOR_CARD,
+                    foreground=COLOR_SUCCESS,
+                    font=("DejaVu Sans", 10, "bold"))
 
     style.configure("TButton",
                     font=("DejaVu Sans", 11),
@@ -657,8 +694,8 @@ class AutoShutdownManager:
             return
 
         warn_s = int(cfg.get("auto_shutdown_warning_seconds", 60))
-        log.warning(f"AutoShutdown: idle={idle:.0f}s ≥ {threshold_s:.0f}s → "
-                    f"cuenta atrás {warn_s}s")
+        log.warning(f"AutoShutdown: idle={idle:.0f}s >= {threshold_s:.0f}s -> "
+                    f"cuenta atras {warn_s}s")
         self._dialog_active = True
         self.app.root.after(0, lambda: self._run_dialog(idle, warn_s))
 
@@ -683,10 +720,10 @@ class AutoShutdownManager:
     def _do_shutdown(self):
         """
         Apaga el equipo usando varios métodos en cascada:
-        1. sudo -n /usr/sbin/poweroff --force --force   (sudoers configurado)
+        1. sudo -n /usr/sbin/poweroff --force --force
         2. sudo -n /sbin/poweroff --force --force
         3. sudo -n poweroff --force --force
-        4. pkexec poweroff --force --force              (pide contraseña gráfica)
+        4. pkexec poweroff --force --force
         5. sudo -n systemctl poweroff --force --force
         6. systemctl poweroff --force --force
         7. sudo -n shutdown -h now
@@ -705,7 +742,7 @@ class AutoShutdownManager:
 
         for i, cmd in enumerate(methods, 1):
             try:
-                log.warning(f"AutoShutdown: intentando método {i}: {' '.join(cmd)}")
+                log.warning(f"AutoShutdown: intentando metodo {i}: {' '.join(cmd)}")
                 result = subprocess.run(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -719,7 +756,7 @@ class AutoShutdownManager:
                 else:
                     err = result.stderr.strip() if result.stderr else "(sin stderr)"
                     log.warning(
-                        f"AutoShutdown: método {i} falló "
+                        f"AutoShutdown: metodo {i} fallo "
                         f"(rc={result.returncode}): {err}")
             except FileNotFoundError:
                 log.warning(f"AutoShutdown: comando no encontrado: {cmd[0]}")
@@ -731,8 +768,8 @@ class AutoShutdownManager:
                 log.warning(f"AutoShutdown: error con {' '.join(cmd)}: {e}")
                 continue
 
-        log.error("AutoShutdown: NINGÚN método de apagado funcionó.")
-        log.error("AutoShutdown: configura sudoers con: sudo cat /etc/sudoers.d/battery-guardian")
+        log.error("AutoShutdown: NINGUN metodo de apagado funciono.")
+        log.error(f"AutoShutdown: configura sudoers con: {SUDOERS_FILE}")
 
 
 # =========================================================
@@ -1065,14 +1102,16 @@ class InfoWindow:
         info = get_battery_full_info()
         idle = get_idle_seconds()
         media = is_multimedia_playing()
-        text = self._format_info(info, idle, media)
+        sudoers_ok = check_sudoers_configured()
+        text = self._format_info(info, idle, media, sudoers_ok)
         self.text.config(state="normal")
         self.text.delete("1.0", "end")
         self.text.insert("1.0", text)
         self.text.config(state="disabled")
 
     @staticmethod
-    def _format_info(info: dict, idle_s: float, media: bool) -> str:
+    def _format_info(info: dict, idle_s: float, media: bool,
+                     sudoers_ok: bool) -> str:
         def fnum(v, unidad="", decimales=2):
             if v is None:
                 return "No disponible"
@@ -1142,6 +1181,17 @@ class InfoWindow:
         lines.append("")
 
         lines.append("═" * 62)
+        lines.append("  AUTO-APAGADO")
+        lines.append("═" * 62)
+        if sudoers_ok:
+            lines.append("  Sudoers:            ✅ configurado (poweroff OK)")
+        else:
+            lines.append("  Sudoers:            ❌ NO configurado")
+            lines.append(f"      Ejecuta:  sudo bash -c 'echo \"$USER ALL=(ALL) "
+                         f"NOPASSWD: {POWEROFF_PATH}\" > {SUDOERS_FILE}'")
+        lines.append("")
+
+        lines.append("═" * 62)
         lines.append("  DISPOSITIVO")
         lines.append("═" * 62)
         lines.append(f"  {info['device'] or 'No detectado'}")
@@ -1179,7 +1229,7 @@ class TrayIcon:
             pystray.MenuItem("Ver informe de batería", self._on_info),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Zoom +", self._on_zoom_in),
-            pystray.MenuItem("Zoom −", self._on_zoom_out),
+            pystray.MenuItem("Zoom -", self._on_zoom_out),
             pystray.MenuItem("Zoom 100%", self._on_zoom_reset),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Auto-apagado",
@@ -1192,7 +1242,7 @@ class TrayIcon:
         self.icon = pystray.Icon(
             name="battery_guardian",
             icon=make_tray_image(level=None),
-            title=f"{APP_NAME}",
+            title=APP_NAME,
             menu=menu)
 
     def _on_show(self, icon=None, item=None):
@@ -1248,8 +1298,10 @@ class TrayIcon:
             self.icon.icon = make_tray_image(level=level, charging=charging,
                                              alert=alert)
             state_txt = "cargando" if charging else "descargando"
-            level_txt = f"{level}%" if level is not None else "—"
-            self.icon.title = f"{APP_NAME} — {level_txt} ({state_txt})"
+            # Usamos guion normal '-' en lugar de em-dash '—' para evitar
+            # el error 'latin-1' codec can't encode character '\u2014'
+            level_txt = f"{level}%" if level is not None else "-"
+            self.icon.title = f"{APP_NAME} - {level_txt} ({state_txt})"
         except Exception as e:
             log.error(f"Error actualizando icono de bandeja: {e}")
 
@@ -1262,7 +1314,7 @@ class BatteryGuardianApp:
     def __init__(self, root, start_hidden=False):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("660x1000")
+        self.root.geometry("660x1050")
         self.root.minsize(600, 760)
         self.root.resizable(True, True)
         self.config = load_config()
@@ -1288,8 +1340,29 @@ class BatteryGuardianApp:
         self.auto_shutdown = AutoShutdownManager(self)
         self.auto_shutdown.start()
 
+        # Verificación de sudoers al arrancar
+        self._check_sudoers_on_startup()
+
         if start_hidden:
             self.root.after(500, self.hide_window)
+
+    def _check_sudoers_on_startup(self):
+        """Avisa si el auto-apagado no podrá funcionar por falta de sudoers."""
+        if self.config.get("auto_shutdown_enabled", False):
+            if not check_sudoers_configured():
+                log.warning("Auto-apagado activado pero sudoers NO configurado")
+                self.root.after(
+                    1500,
+                    lambda: messagebox.showwarning(
+                        APP_NAME,
+                        "El auto-apagado está ACTIVADO pero el archivo sudoers\n"
+                        "NO está configurado. El equipo NO se apagará.\n\n"
+                        "Soluciónalo ejecutando:\n\n"
+                        "  sudo bash -c 'echo \"$USER ALL=(ALL) NOPASSWD: "
+                        "/usr/sbin/poweroff\" > /etc/sudoers.d/battery-guardian'\n"
+                        "  sudo chmod 0440 /etc/sudoers.d/battery-guardian\n\n"
+                        "O reinstala con ./install.sh")
+                )
 
     def _setup_tray(self):
         self.tray = TrayIcon(self)
@@ -1478,6 +1551,11 @@ class BatteryGuardianApp:
         self.lbl_media = ttk.Label(card3, text="Multimedia: —",
                                    style="Muted.TLabel")
         self.lbl_media.pack(anchor="w", pady=2)
+
+        # Estado del sudoers (nuevo en v2.2.2)
+        self.lbl_sudoers = ttk.Label(card3, text="Sudoers: —",
+                                     style="Muted.TLabel")
+        self.lbl_sudoers.pack(anchor="w", pady=2)
 
         ttk.Label(card3,
                   text=("💡 No apaga si hay multimedia reproduciéndose.\n"
@@ -1715,6 +1793,17 @@ class BatteryGuardianApp:
         self.lbl_media.config(
             text=f"Multimedia: {'🎵 reproduciéndose' if media else '🔇 silencio'}")
 
+        # Estado del sudoers
+        sudoers_ok = check_sudoers_configured()
+        if sudoers_ok:
+            self.lbl_sudoers.config(
+                text="Sudoers: ✅ configurado (auto-apagado listo)",
+                style="Ok.TLabel")
+        else:
+            self.lbl_sudoers.config(
+                text="Sudoers: ❌ NO configurado (auto-apagado NO funcionará)",
+                style="Warn.TLabel")
+
         if self.tray:
             self.tray.update(level=level, charging=charging,
                              alert=self.alert_active)
@@ -1757,6 +1846,7 @@ def print_info_cli():
     info = get_battery_full_info()
     idle = get_idle_seconds()
     media = is_multimedia_playing()
+    sudoers_ok = check_sudoers_configured()
     print("=" * 55)
     print(f"  {APP_NAME} v{APP_VERSION} - Informe de batería")
     print("=" * 55)
@@ -1776,6 +1866,7 @@ def print_info_cli():
     else:
         print(f"  Inactividad:        no disponible")
     print(f"  Multimedia activa:  {'SÍ' if media else 'No'}")
+    print(f"  Sudoers:            {'✓ OK' if sudoers_ok else '✗ NO CONFIGURADO'}")
     print("=" * 55)
 
 
@@ -1821,4 +1912,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
