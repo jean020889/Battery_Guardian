@@ -1,1239 +1,277 @@
 
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Battery Guardian
-================
-Cuida la salud de la batería de tu portátil Linux.
+#!/bin/bash
+# =========================================================
+#  Battery Guardian - Instalador v2.1.0
+# =========================================================
+set -e
 
-- Alerta visual a pantalla completa + pitido cuando:
-  * La batería llega al máximo configurado (con cargador conectado)
-  * La batería baja al mínimo configurado (sin cargador)
-- La alerta NO se puede cerrar hasta realizar la acción.
-- Interfaz gráfica con ZOOM escalable (Ctrl +/-/0, Ctrl+rueda, botones A-/A+/A↺).
-- Información detallada: energy-full, capacity, charge-cycles.
-- Icono en la bandeja del sistema (donde WiFi, Bluetooth…).
-- Se ejecuta siempre en segundo plano. Al pulsar la X se oculta
-  en la bandeja. Sólo se puede salir desde el menú del icono → "Salir".
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_NAME="Battery Guardian"
+APP_SLUG="battery-guardian"
+INSTALL_DIR="$HOME/Apps/Battery_Guardian"
+VENV_DIR="$INSTALL_DIR/venv"
+APP_FILE="$INSTALL_DIR/battery_guardian.py"
+ICON_SRC="$PROJECT_DIR/battery_guardian_icon.png"
+ICON_DST="$INSTALL_DIR/battery_guardian_icon.png"
+LAUNCHER="$INSTALL_DIR/run.sh"
 
-Autor: Proyecto Battery Guardian
-Licencia: MIT
-"""
+DESKTOP_FILE="$HOME/Desktop/${APP_SLUG}.desktop"
+MENU_FILE="$HOME/.local/share/applications/${APP_SLUG}.desktop"
+AUTOSTART_FILE="$HOME/.config/autostart/${APP_SLUG}.desktop"
+BIN_LINK="$HOME/.local/bin/${APP_SLUG}"
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+SYSTEMD_FILE="$SYSTEMD_USER_DIR/${APP_SLUG}.service"
 
-import os
-import re
-import sys
-import json
-import time
-import logging
-import threading
-import subprocess
-import tkinter as tk
-import tkinter.font as tkfont
-from tkinter import ttk, messagebox
-
-try:
-    import pystray
-    from PIL import Image, ImageDraw
-    TRAY_AVAILABLE = True
-except ImportError:
-    TRAY_AVAILABLE = False
-
+echo "═══════════════════════════════════════════════════════"
+echo "  🔋 Instalando $APP_NAME v2.1.0"
+echo "═══════════════════════════════════════════════════════"
+echo ""
 
 # =========================================================
-#  CONSTANTES
+#  1) Dependencias
 # =========================================================
-APP_NAME = "Battery Guardian"
-APP_VERSION = "1.4.0"
-SYSTEMD_SERVICE = "battery-guardian.service"
+echo "▶ [1/12] Comprobando dependencias del sistema..."
+MISSING_APT=()
+command -v python3 &>/dev/null        || MISSING_APT+=("python3")
+command -v upower  &>/dev/null        || MISSING_APT+=("upower")
+python3 -c "import tkinter" 2>/dev/null || MISSING_APT+=("python3-tk")
+python3 -c "import venv"    2>/dev/null || MISSING_APT+=("python3-venv")
 
-HOME = os.path.expanduser("~")
-CONFIG_DIR = os.path.join(HOME, ".config", "battery_guardian")
-CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
-LOG_FILE = os.path.join(CONFIG_DIR, "battery_guardian.log")
+if [ ${#MISSING_APT[@]} -gt 0 ]; then
+    echo "❌ Faltan dependencias:"
+    for pkg in "${MISSING_APT[@]}"; do echo "   - $pkg"; done
+    echo ""
+    echo "   sudo apt update && sudo apt install ${MISSING_APT[*]}"
+    exit 1
+fi
+echo "   ✓ Dependencias OK"
 
-DEFAULT_CONFIG = {
-    "enabled": True,
-    "max_charge": 80,
-    "min_charge": 15,
-    "check_interval": 20,
-    "sound_enabled": True,
-    "sound_repeat_ms": 2500,
-    "fullscreen_alert": True,
-    "close_to_tray": True,
-    "start_hidden": False,
-    "zoom": 1.0,
-}
-
-# Rango y paso de zoom
-ZOOM_MIN = 0.8
-ZOOM_MAX = 3.0
-ZOOM_STEP = 0.1
-
-SOUND_CANDIDATES = [
-    "/usr/share/sounds/freedesktop/stereo/bell.oga",
-    "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga",
-    "/usr/share/sounds/freedesktop/stereo/complete.oga",
-    "/usr/share/sounds/ubuntu/stereo/bell.ogg",
-    "/usr/share/sounds/alsa/Front_Center.wav",
-]
-
+# Dependencias OPCIONALES para auto-apagado por inactividad
+echo ""
+echo "   Dependencias opcionales (auto-apagado por inactividad):"
+if command -v xprintidle &>/dev/null; then
+    echo "   ✓ xprintidle instalado (detección de inactividad)"
+else
+    echo "   ⚠ xprintidle NO instalado."
+    echo "     Sin él, la detección de inactividad no funciona en X11."
+    echo "     Instálalo con:  sudo apt install xprintidle"
+fi
+if command -v pactl &>/dev/null; then
+    echo "   ✓ pactl instalado (detección de multimedia)"
+else
+    echo "   ⚠ pactl NO instalado (normalmente viene con PulseAudio/PipeWire)"
+fi
+echo ""
 
 # =========================================================
-#  LOGGING
+#  2) Comprobar archivos
 # =========================================================
-def setup_logging():
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    logging.basicConfig(
-        filename=LOG_FILE,
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
+echo "▶ [2/12] Comprobando archivos requeridos..."
+[ -f "$ICON_SRC" ] || { echo "❌ Falta battery_guardian_icon.png"; exit 1; }
+[ -f "$PROJECT_DIR/battery_guardian.py" ] || { echo "❌ Falta battery_guardian.py"; exit 1; }
+echo "   ✓ Archivos OK"
 
-
-log = logging.getLogger(APP_NAME)
-
+LICENSE_SRC=""
+[ -f "$PROJECT_DIR/LICENSE.md" ] && LICENSE_SRC="$PROJECT_DIR/LICENSE.md"
+[ -z "$LICENSE_SRC" ] && [ -f "$PROJECT_DIR/LICENSE" ] && LICENSE_SRC="$PROJECT_DIR/LICENSE"
+echo ""
 
 # =========================================================
-#  CONFIGURACIÓN
+#  3) Detener instancia antigua
 # =========================================================
-def load_config() -> dict:
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            for k, v in DEFAULT_CONFIG.items():
-                cfg.setdefault(k, v)
-            return cfg
-        except Exception as e:
-            log.error(f"Error leyendo config: {e}")
-    return DEFAULT_CONFIG.copy()
-
-
-def save_config(cfg: dict) -> None:
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        log.error(f"Error guardando config: {e}")
-
+echo "▶ [3/12] Deteniendo instancias antiguas..."
+if systemctl --user list-unit-files 2>/dev/null | grep -q "${APP_SLUG}.service"; then
+    systemctl --user stop "${APP_SLUG}.service" 2>/dev/null || true
+    systemctl --user disable "${APP_SLUG}.service" 2>/dev/null || true
+fi
+pkill -9 -f "battery_guardian.py" 2>/dev/null || true
+sleep 1
+echo "   ✓ OK"
+echo ""
 
 # =========================================================
-#  SYSTEMD
+#  4) Crear carpeta
 # =========================================================
-def is_running_under_systemd() -> bool:
-    return bool(os.environ.get("INVOCATION_ID"))
-
-
-def notify_systemd_stop():
-    if not is_running_under_systemd():
-        return
-    try:
-        subprocess.Popen(
-            ["systemctl", "--user", "stop", SYSTEMD_SERVICE],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
-
+echo "▶ [4/12] Creando carpeta de instalación..."
+mkdir -p "$INSTALL_DIR"
+echo "   ✓ $INSTALL_DIR"
+echo ""
 
 # =========================================================
-#  BATERÍA
+#  5) Copiar archivos
 # =========================================================
-def find_battery_device():
-    try:
-        out = subprocess.check_output(
-            ["upower", "-e"], text=True, stderr=subprocess.DEVNULL)
-        for line in out.splitlines():
-            low = line.lower()
-            if "battery" in low or "/bat" in low:
-                return line.strip()
-    except Exception as e:
-        log.error(f"upower -e error: {e}")
-    return None
-
-
-def _parse_upower_output(text: str) -> dict:
-    data = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip()
-        if key:
-            data[key] = value
-    return data
-
-
-def _to_float(value_str):
-    if value_str is None:
-        return None
-    m = re.search(r"-?\d+[.,]?\d*", str(value_str))
-    if not m:
-        return None
-    try:
-        return float(m.group(0).replace(",", "."))
-    except ValueError:
-        return None
-
-
-def _to_int(value_str):
-    if value_str is None:
-        return None
-    m = re.search(r"-?\d+", str(value_str))
-    if not m:
-        return None
-    try:
-        return int(m.group(0))
-    except ValueError:
-        return None
-
-
-def get_battery_full_info() -> dict:
-    info = {
-        "device": None, "state": None, "percentage": None,
-        "energy": None, "energy_full": None, "energy_full_design": None,
-        "energy_rate": None, "capacity": None, "charge_cycles": None,
-        "voltage": None, "time_to_empty": None, "time_to_full": None,
-        "temperature": None,
-    }
-    device = find_battery_device()
-    if not device:
-        return info
-    info["device"] = device
-    try:
-        out = subprocess.check_output(
-            ["upower", "-i", device], text=True, stderr=subprocess.DEVNULL)
-    except Exception as e:
-        log.error(f"upower -i error: {e}")
-        return info
-    raw = _parse_upower_output(out)
-    info["state"] = raw.get("state")
-    info["percentage"] = _to_int(raw.get("percentage"))
-    info["energy"] = _to_float(raw.get("energy"))
-    info["energy_full"] = _to_float(raw.get("energy-full"))
-    info["energy_full_design"] = _to_float(raw.get("energy-full-design"))
-    info["energy_rate"] = _to_float(raw.get("energy-rate"))
-    info["capacity"] = _to_float(raw.get("capacity"))
-    info["charge_cycles"] = _to_int(raw.get("charge-cycles"))
-    info["voltage"] = _to_float(raw.get("voltage"))
-    info["temperature"] = _to_float(raw.get("temperature"))
-    info["time_to_empty"] = raw.get("time to empty")
-    info["time_to_full"] = raw.get("time to full")
-    if info["capacity"] is None and info["energy_full"] and info["energy_full_design"]:
-        info["capacity"] = round(
-            info["energy_full"] / info["energy_full_design"] * 100, 2)
-    return info
-
-
-def get_battery():
-    info = get_battery_full_info()
-    return info["state"], info["percentage"]
-
+echo "▶ [5/12] Copiando archivos..."
+cp -f "$PROJECT_DIR/battery_guardian.py" "$APP_FILE"
+chmod +x "$APP_FILE"
+cp -f "$ICON_SRC" "$ICON_DST"
+[ -f "$PROJECT_DIR/requirements.txt" ] && cp -f "$PROJECT_DIR/requirements.txt" "$INSTALL_DIR/"
+[ -f "$PROJECT_DIR/README.md" ]        && cp -f "$PROJECT_DIR/README.md"        "$INSTALL_DIR/"
+[ -n "$LICENSE_SRC" ]                  && cp -f "$LICENSE_SRC"                  "$INSTALL_DIR/"
+[ -f "$PROJECT_DIR/Installation_instructions.md" ] && \
+    cp -f "$PROJECT_DIR/Installation_instructions.md" "$INSTALL_DIR/"
+echo "   ✓ Archivos copiados"
+echo ""
 
 # =========================================================
-#  SONIDO
+#  6) venv
 # =========================================================
-def play_sound():
-    for path in SOUND_CANDIDATES:
-        if os.path.exists(path):
-            try:
-                if path.endswith(".wav"):
-                    subprocess.Popen(["aplay", "-q", path],
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL)
-                else:
-                    subprocess.Popen(["paplay", path],
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL)
-                return
-            except Exception as e:
-                log.warning(f"No se pudo reproducir {path}: {e}")
-
+echo "▶ [6/12] Creando entorno virtual..."
+[ -d "$VENV_DIR" ] && [ ! -x "$VENV_DIR/bin/python" ] && rm -rf "$VENV_DIR"
+[ ! -d "$VENV_DIR" ] && python3 -m venv "$VENV_DIR"
+[ -x "$VENV_DIR/bin/python" ] || { echo "❌ venv roto"; exit 1; }
+[ -x "$VENV_DIR/bin/pip" ]    || { echo "❌ pip roto"; exit 1; }
+echo "   ✓ venv OK ($("$VENV_DIR/bin/python" --version))"
+echo ""
 
 # =========================================================
-#  GESTOR DE ZOOM
+#  7) Dependencias Python
 # =========================================================
-class ZoomManager:
-    """
-    Gestiona el factor de zoom global de la aplicación.
-    Todas las fuentes se calculan como: base_size * zoom.
-    """
-
-    def __init__(self, root, initial_zoom=1.0):
-        self.root = root
-        self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, float(initial_zoom)))
-        self._base_fonts = {}   # nombre → tamaño base
-        self._listeners = []    # callbacks al cambiar el zoom
-
-        # Registrar fuentes base (se rellenan al construir la UI)
-        self._register_default_fonts()
-
-    def _register_default_fonts(self):
-        """Registra los tamaños base de las fuentes conocidas."""
-        # TkDefaultFont y TkTextFont afectan a casi todos los widgets ttk
-        try:
-            default_font = tkfont.nametofont("TkDefaultFont")
-            self._base_fonts["TkDefaultFont"] = default_font.actual("size")
-        except Exception:
-            self._base_fonts["TkDefaultFont"] = 10
-
-        try:
-            text_font = tkfont.nametofont("TkTextFont")
-            self._base_fonts["TkTextFont"] = text_font.actual("size")
-        except Exception:
-            self._base_fonts["TkTextFont"] = 10
-
-        try:
-            fixed_font = tkfont.nametofont("TkFixedFont")
-            self._base_fonts["TkFixedFont"] = fixed_font.actual("size")
-        except Exception:
-            self._base_fonts["TkFixedFont"] = 10
-
-    def register_font(self, name, base_size):
-        """Registrar una fuente personalizada con su tamaño base."""
-        self._base_fonts[name] = base_size
-
-    def scaled(self, base_size):
-        """Devuelve el tamaño escalado de un número base."""
-        return max(6, int(round(base_size * self.zoom)))
-
-    def apply(self):
-        """Aplica el zoom actual a todas las fuentes registradas."""
-        for name, base in self._base_fonts.items():
-            try:
-                f = tkfont.nametofont(name)
-                f.configure(size=self.scaled(base))
-            except Exception:
-                pass
-        # Notificar a los listeners (para widgets con fuentes hardcoded)
-        for cb in self._listeners:
-            try:
-                cb()
-            except Exception:
-                pass
-
-    def add_listener(self, callback):
-        self._listeners.append(callback)
-
-    def set_zoom(self, value):
-        self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, round(value, 2)))
-        self.apply()
-
-    def zoom_in(self):
-        self.set_zoom(self.zoom + ZOOM_STEP)
-
-    def zoom_out(self):
-        self.set_zoom(self.zoom - ZOOM_STEP)
-
-    def zoom_reset(self):
-        self.set_zoom(1.0)
-
-    def percent(self):
-        return int(round(self.zoom * 100))
-
+echo "▶ [7/12] Instalando dependencias Python..."
+"$VENV_DIR/bin/pip" install --upgrade pip --quiet
+[ -f "$INSTALL_DIR/requirements.txt" ] && \
+    "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt" --quiet
+echo "   ✓ pystray y Pillow instalados"
+echo ""
 
 # =========================================================
-#  ICONO DE LA BANDEJA
+#  8) Lanzador
 # =========================================================
-def make_tray_image(level=None, charging=False, alert=False):
-    size = 64
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    border_color = "#FF5252" if alert else "#FFFFFF"
-    draw.rectangle([4, 14, 52, 50], outline=border_color, width=3,
-                   fill=(25, 25, 25, 255))
-    draw.rectangle([52, 24, 58, 40], fill=border_color)
-    if level is not None:
-        inner_x0, inner_x1 = 8, 48
-        inner_w = inner_x1 - inner_x0
-        if charging:
-            color = "#2196F3"
-        elif level <= 20:
-            color = "#F44336"
-        elif level <= 40:
-            color = "#FF9800"
-        else:
-            color = "#4CAF50"
-        w = int(inner_w * max(0, min(100, level)) / 100)
-        if w > 0:
-            draw.rectangle([inner_x0, 18, inner_x0 + w, 46], fill=color)
-        if charging:
-            draw.polygon(
-                [(32, 20), (26, 34), (31, 34), (28, 44), (38, 30),
-                 (33, 30), (36, 20)],
-                fill="#FFF176", outline="#FFF176")
-    return img
-
+echo "▶ [8/12] Creando lanzador..."
+cat > "$LAUNCHER" << 'LAUNCHER'
+#!/bin/bash
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$DIR/venv/bin/python" "$DIR/battery_guardian.py" "$@"
+LAUNCHER
+chmod +x "$LAUNCHER"
+echo "   ✓ $LAUNCHER"
+echo ""
 
 # =========================================================
-#  VENTANA DE ALERTA BLOQUEANTE
+#  9) Enlace CLI
 # =========================================================
-class AlertWindow:
-
-    def __init__(self, parent, config, alert_type, on_resolved, zoom_mgr=None):
-        self.config = config
-        self.alert_type = alert_type
-        self.on_resolved = on_resolved
-        self.zoom_mgr = zoom_mgr
-        self._running = True
-
-        self.win = tk.Toplevel(parent)
-        self.win.title(f"{APP_NAME} - ALERTA")
-        self.win.attributes("-topmost", True)
-        self.win.protocol("WM_DELETE_WINDOW", lambda: None)
-
-        if config.get("fullscreen_alert", True):
-            try:
-                self.win.attributes("-fullscreen", True)
-            except Exception:
-                self.win.geometry("900x600")
-        else:
-            self.win.geometry("900x600")
-            self.win.update_idletasks()
-            w, h = 900, 600
-            sw = self.win.winfo_screenwidth()
-            sh = self.win.winfo_screenheight()
-            self.win.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
-
-        bg = "#8B0000" if alert_type == "disconnect" else "#B8860B"
-        self.win.configure(bg=bg)
-
-        try:
-            self.win.grab_set()
-        except Exception:
-            pass
-
-        frame = tk.Frame(self.win, bg=bg)
-        frame.place(relx=0.5, rely=0.5, anchor="center")
-
-        if alert_type == "disconnect":
-            title = "DESCONECTA EL CARGADOR"
-            msg = (f"La batería ha alcanzado el {config['max_charge']}%.\n\n"
-                   "Desconecta el cargador para cuidar la batería.")
-        else:
-            title = "CONECTA EL CARGADOR"
-            msg = (f"La batería ha bajado al {config['min_charge']}%.\n\n"
-                   "Conecta el cargador para evitar un apagado inesperado.")
-
-        # Fuentes grandes en la alerta (también escalables)
-        z = (zoom_mgr.zoom if zoom_mgr else 1.0)
-        self.lbl_title = tk.Label(frame, text=f"⚠  {title}  ⚠",
-                                  font=("Arial", int(40 * z), "bold"),
-                                  fg="white", bg=bg)
-        self.lbl_title.pack(pady=30)
-
-        self.lbl_msg = tk.Label(frame, text=msg,
-                                font=("Arial", int(24 * z)),
-                                fg="white", bg=bg, justify="center")
-        self.lbl_msg.pack(pady=20)
-
-        self.status_label = tk.Label(frame, text="",
-                                     font=("Arial", int(16 * z)),
-                                     fg="#FFFFCC", bg=bg, justify="center")
-        self.status_label.pack(pady=20)
-
-        self.lbl_hint = tk.Label(
-            frame,
-            text="Esta ventana se cerrará automáticamente al realizar la acción.",
-            font=("Arial", int(14 * z), "italic"),
-            fg="#EEEEEE", bg=bg)
-        self.lbl_hint.pack(pady=10)
-
-        # Añadir listener de zoom para actualizar fuentes en vivo
-        if zoom_mgr:
-            zoom_mgr.add_listener(self._refresh_fonts)
-
-        self._sound_loop()
-        self._check_loop()
-        log.info(f"Alerta mostrada: {alert_type}")
-
-    def _refresh_fonts(self):
-        """Se llama cuando cambia el zoom, para actualizar las fuentes."""
-        if not self.win.winfo_exists():
-            return
-        z = self.zoom_mgr.zoom if self.zoom_mgr else 1.0
-        try:
-            self.lbl_title.config(font=("Arial", int(40 * z), "bold"))
-            self.lbl_msg.config(font=("Arial", int(24 * z)))
-            self.status_label.config(font=("Arial", int(16 * z)))
-            self.lbl_hint.config(font=("Arial", int(14 * z), "italic"))
-        except tk.TclError:
-            pass
-
-    def _sound_loop(self):
-        if not self._running or not self.win.winfo_exists():
-            return
-        if self.config.get("sound_enabled", True):
-            play_sound()
-        self.win.after(self.config.get("sound_repeat_ms", 2500),
-                       self._sound_loop)
-
-    def _check_loop(self):
-        if not self._running or not self.win.winfo_exists():
-            return
-        state, level = get_battery()
-        resolved = False
-        if self.alert_type == "disconnect":
-            if state == "discharging":
-                resolved = True
-        else:
-            if state in ("charging", "fully-charged"):
-                resolved = True
-        if resolved:
-            self._close()
-            return
-        state_txt = state if state else "desconocido"
-        level_txt = f"{level}%" if level is not None else "N/D"
-        try:
-            self.status_label.config(
-                text=f"Estado actual: {state_txt}   |   Nivel: {level_txt}")
-        except tk.TclError:
-            return
-        self.win.after(2000, self._check_loop)
-
-    def _close(self):
-        if not self._running:
-            return
-        self._running = False
-        try:
-            self.win.grab_release()
-        except Exception:
-            pass
-        try:
-            self.win.destroy()
-        except Exception:
-            pass
-        log.info(f"Alerta resuelta: {self.alert_type}")
-        if self.on_resolved:
-            self.on_resolved()
-
+echo "▶ [9/12] Enlace CLI..."
+mkdir -p "$HOME/.local/bin"
+ln -sf "$LAUNCHER" "$BIN_LINK"
+echo "   ✓ $BIN_LINK"
+echo ""
 
 # =========================================================
-#  VENTANA DE INFORMACIÓN
+#  10) Escritorio + menú
 # =========================================================
-class InfoWindow:
+echo "▶ [10/12] Creando accesos directos..."
+mkdir -p "$HOME/Desktop"
+cat > "$DESKTOP_FILE" << DESKTOP
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=$APP_NAME
+GenericName=Battery Care
+Comment=Cuida la salud de la batería de tu portátil
+Exec=$LAUNCHER
+Icon=$ICON_DST
+Terminal=false
+Categories=Utility;System;
+StartupNotify=true
+DESKTOP
+chmod +x "$DESKTOP_FILE"
+gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null || true
+echo "   ✓ Escritorio: $DESKTOP_FILE"
 
-    def __init__(self, parent, zoom_mgr=None):
-        self.zoom_mgr = zoom_mgr
-        self.win = tk.Toplevel(parent)
-        self.win.title(f"{APP_NAME} - Información de la batería")
-        self.win.geometry("700x620")
-        self.win.minsize(500, 400)
-
-        main = ttk.Frame(self.win, padding=16)
-        main.pack(fill="both", expand=True)
-
-        # Cabecera con controles de zoom
-        header = ttk.Frame(main)
-        header.pack(fill="x", pady=(0, 10))
-
-        self.lbl_title = tk.Label(header, text="📊  Información detallada de la batería",
-                                  font=("Arial", self._fs(14), "bold"))
-        self.lbl_title.pack(side="left")
-
-        # Botones de zoom
-        zbtns = ttk.Frame(header)
-        zbtns.pack(side="right")
-        self.lbl_zoom = ttk.Label(zbtns, text="100%")
-        self.lbl_zoom.pack(side="right", padx=4)
-        ttk.Button(zbtns, text="A+", width=4,
-                   command=self._zoom_in).pack(side="right", padx=1)
-        ttk.Button(zbtns, text="A−", width=4,
-                   command=self._zoom_out).pack(side="right", padx=1)
-        ttk.Button(zbtns, text="↺", width=3,
-                   command=self._zoom_reset).pack(side="right", padx=1)
-
-        self.text = tk.Text(main, wrap="word",
-                            font=("Monospace", self._fs(10)),
-                            height=22, bg="#1e1e1e", fg="#e0e0e0",
-                            insertbackground="white", relief="flat")
-        self.text.pack(fill="both", expand=True)
-
-        btns = ttk.Frame(main)
-        btns.pack(pady=10)
-        ttk.Button(btns, text="🔄  Actualizar",
-                   command=self.refresh).grid(row=0, column=0, padx=4)
-        ttk.Button(btns, text="❌  Cerrar",
-                   command=self.win.destroy).grid(row=0, column=1, padx=4)
-
-        # Bindings de zoom
-        if zoom_mgr:
-            zoom_mgr.add_listener(self._refresh_fonts)
-            self.win.bind("<Control-plus>", lambda e: self._zoom_in())
-            self.win.bind("<Control-equal>", lambda e: self._zoom_in())
-            self.win.bind("<Control-minus>", lambda e: self._zoom_out())
-            self.win.bind("<Control-0>", lambda e: self._zoom_reset())
-            self.win.bind("<Control-MouseWheel>", self._on_wheel)
-            self.win.bind("<Control-Button-4>", lambda e: self._zoom_in())
-            self.win.bind("<Control-Button-5>", lambda e: self._zoom_out())
-
-        self._update_zoom_label()
-        self.refresh()
-
-    def _fs(self, base):
-        if self.zoom_mgr:
-            return self.zoom_mgr.scaled(base)
-        return base
-
-    def _zoom_in(self):
-        if self.zoom_mgr:
-            self.zoom_mgr.zoom_in()
-            self._update_zoom_label()
-
-    def _zoom_out(self):
-        if self.zoom_mgr:
-            self.zoom_mgr.zoom_out()
-            self._update_zoom_label()
-
-    def _zoom_reset(self):
-        if self.zoom_mgr:
-            self.zoom_mgr.zoom_reset()
-            self._update_zoom_label()
-
-    def _on_wheel(self, event):
-        if event.delta > 0:
-            self._zoom_in()
-        else:
-            self._zoom_out()
-
-    def _update_zoom_label(self):
-        if self.zoom_mgr:
-            self.lbl_zoom.config(text=f"{self.zoom_mgr.percent()}%")
-
-    def _refresh_fonts(self):
-        if not self.win.winfo_exists():
-            return
-        try:
-            self.lbl_title.config(font=("Arial", self._fs(14), "bold"))
-            self.text.config(font=("Monospace", self._fs(10)))
-            self._update_zoom_label()
-        except tk.TclError:
-            pass
-
-    def refresh(self):
-        info = get_battery_full_info()
-        text = self._format_info(info)
-        self.text.config(state="normal")
-        self.text.delete("1.0", "end")
-        self.text.insert("1.0", text)
-        self.text.config(state="disabled")
-
-    @staticmethod
-    def _format_info(info: dict) -> str:
-        def fnum(v, unidad="", decimales=2):
-            if v is None:
-                return "No disponible"
-            return f"{v:.{decimales}f} {unidad}".strip()
-
-        def fstr(v):
-            return v if v else "No disponible"
-
-        estado_map = {
-            "charging": "🔌 Cargando",
-            "discharging": "🔋 Descargando",
-            "fully-charged": "✅ Completamente cargada",
-            "pending-charge": "⏳ Pendiente de carga",
-            "pending-discharge": "⏳ Pendiente de descarga",
-            "unknown": "❓ Desconocido",
-        }
-
-        lines = []
-        lines.append("═" * 62)
-        lines.append("  ESTADO ACTUAL")
-        lines.append("═" * 62)
-        lines.append(f"  Estado:             {estado_map.get(info['state'], fstr(info['state']))}")
-        lines.append(f"  Nivel de carga:     {fnum(info['percentage'], '%', 0)}")
-        lines.append(f"  Energía actual:     {fnum(info['energy'], 'Wh')}")
-        lines.append(f"  Potencia (rate):    {fnum(info['energy_rate'], 'W')}")
-        lines.append(f"  Voltaje:            {fnum(info['voltage'], 'V')}")
-        lines.append(f"  Temperatura:        {fnum(info['temperature'], '°C', 1)}")
-        lines.append(f"  Tiempo restante:    {fstr(info['time_to_empty'])}")
-        lines.append(f"  Tiempo a completa:  {fstr(info['time_to_full'])}")
-        lines.append("")
-        lines.append("═" * 62)
-        lines.append("  SALUD DE LA BATERÍA")
-        lines.append("═" * 62)
-        lines.append(f"  energy-full:        {fnum(info['energy_full'], 'Wh')}")
-        lines.append(f"  energy-full-design: {fnum(info['energy_full_design'], 'Wh')}")
-        lines.append(f"  capacity (salud):   {fnum(info['capacity'], '%')}")
-        cycles = info['charge_cycles']
-        lines.append(f"  charge-cycles:      "
-                     f"{cycles if cycles is not None else 'No reportado por el hardware'}")
-        lines.append("")
-
-        cap = info.get("capacity")
-        if cap is not None:
-            if cap >= 90:
-                salud = "🟢 Excelente"
-            elif cap >= 80:
-                salud = "🟡 Buena"
-            elif cap >= 60:
-                salud = "🟠 Aceptable (considera reemplazar pronto)"
-            elif cap >= 40:
-                salud = "🔴 Degradada (reemplazo recomendado)"
-            else:
-                salud = "⛔ Muy degradada (reemplazo urgente)"
-            lines.append(f"  Diagnóstico:        {salud}")
-            lines.append("")
-
-        lines.append("═" * 62)
-        lines.append("  DISPOSITIVO")
-        lines.append("═" * 62)
-        lines.append(f"  {info['device'] or 'No detectado'}")
-        lines.append("")
-        return "\n".join(lines)
-
+mkdir -p "$HOME/.local/share/applications"
+cp -f "$DESKTOP_FILE" "$MENU_FILE"
+update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+echo "   ✓ Menú: $MENU_FILE"
+echo ""
 
 # =========================================================
-#  BANDEJA DEL SISTEMA
+#  11) Servicio systemd CON RETARDO DE ARRANQUE
 # =========================================================
-class TrayIcon:
+echo "▶ [11/12] Instalando servicio systemd --user (con retardo)..."
+[ -f "$AUTOSTART_FILE" ] && rm -f "$AUTOSTART_FILE"
 
-    def __init__(self, app):
-        self.app = app
-        self.icon = None
-        self._thread = None
-        self._last_image_key = None
-        if not TRAY_AVAILABLE:
-            log.warning("pystray/Pillow no disponibles: no habrá icono de bandeja.")
-            return
-        try:
-            self._create_icon()
-        except Exception as e:
-            log.error(f"Error creando icono de bandeja: {e}")
-            self.icon = None
+mkdir -p "$SYSTEMD_USER_DIR"
+cat > "$SYSTEMD_FILE" << SYSTEMD
+[Unit]
+Description=$APP_NAME - Cuida la batería del portátil
+Documentation=file://$INSTALL_DIR/README.md
+After=graphical-session.target
+PartOf=graphical-session.target
 
-    def _create_icon(self):
-        menu = pystray.Menu(
-            pystray.MenuItem("Mostrar ventana", self._on_show, default=True),
-            pystray.MenuItem("Ocultar ventana", self._on_hide),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Activar / desactivar monitoreo",
-                             self._on_toggle,
-                             checked=lambda item: self.app.config["enabled"]),
-            pystray.MenuItem("Ver informe de batería", self._on_info),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Zoom +", self._on_zoom_in),
-            pystray.MenuItem("Zoom −", self._on_zoom_out),
-            pystray.MenuItem("Zoom 100%", self._on_zoom_reset),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Salir", self._on_quit),
-        )
-        self.icon = pystray.Icon(
-            name="battery_guardian",
-            icon=make_tray_image(level=None),
-            title=f"{APP_NAME}",
-            menu=menu)
+[Service]
+Type=simple
+# Espera 20 s para que el escritorio termine de arrancar
+# (mejora el tiempo de inicio del sistema y evita conflictos)
+ExecStartPre=/bin/sleep 20
+ExecStart=$LAUNCHER --hidden
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=%h/.Xauthority
 
-    def _on_show(self, icon=None, item=None):
-        self.app.root.after(0, self.app.show_window)
+[Install]
+WantedBy=default.target
+SYSTEMD
+echo "   ✓ Servicio con retardo de 20 s configurado"
 
-    def _on_hide(self, icon=None, item=None):
-        self.app.root.after(0, self.app.hide_window)
-
-    def _on_toggle(self, icon=None, item=None):
-        self.app.root.after(0, self.app.toggle_enabled)
-
-    def _on_info(self, icon=None, item=None):
-        self.app.root.after(0, self.app.open_info_window)
-
-    def _on_zoom_in(self, icon=None, item=None):
-        self.app.root.after(0, self.app.zoom_in)
-
-    def _on_zoom_out(self, icon=None, item=None):
-        self.app.root.after(0, self.app.zoom_out)
-
-    def _on_zoom_reset(self, icon=None, item=None):
-        self.app.root.after(0, self.app.zoom_reset)
-
-    def _on_quit(self, icon=None, item=None):
-        self.app.root.after(0, self.app.ask_quit)
-
-    def start(self):
-        if self.icon is None:
-            return
-        self._thread = threading.Thread(
-            target=self.icon.run, daemon=True, name="tray-icon")
-        self._thread.start()
-        log.info("Icono de bandeja iniciado")
-
-    def stop(self):
-        if self.icon is not None:
-            try:
-                self.icon.stop()
-            except Exception:
-                pass
-            log.info("Icono de bandeja detenido")
-
-    def update(self, level, charging, alert=False):
-        if self.icon is None:
-            return
-        key = (level, charging, alert)
-        if key == self._last_image_key:
-            return
-        self._last_image_key = key
-        try:
-            self.icon.icon = make_tray_image(level=level, charging=charging,
-                                             alert=alert)
-            state_txt = "cargando" if charging else "descargando"
-            level_txt = f"{level}%" if level is not None else "—"
-            self.icon.title = f"{APP_NAME} — {level_txt} ({state_txt})"
-        except Exception as e:
-            log.error(f"Error actualizando icono de bandeja: {e}")
-
+systemctl --user daemon-reload
+systemctl --user enable "${APP_SLUG}.service"
+systemctl --user start  "${APP_SLUG}.service" || true
+echo "   ✓ Servicio habilitado y arrancado"
+echo ""
 
 # =========================================================
-#  APLICACIÓN PRINCIPAL
+#  12) Verificación
 # =========================================================
-class BatteryGuardianApp:
+echo "▶ [12/12] Verificando..."
+echo ""
+echo "   📂 Contenido de $INSTALL_DIR:"
+ls -lh "$INSTALL_DIR" | grep -v "^total" | awk '{printf "      %-40s %s\n", $9, $5}'
+echo ""
+echo "   📂 venv:"
+ls "$VENV_DIR/bin" | tr '\n' ' ' | sed 's/^/      /'
+echo ""
+echo ""
+if systemctl --user is-active --quiet "${APP_SLUG}.service"; then
+    echo "   ✓ Servicio systemd ACTIVO"
+else
+    echo "   ⚠ Servicio NO activo"
+fi
+echo ""
+
+if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+    echo "⚠  Añade ~/.local/bin al PATH:"
+    echo '   echo '\''export PATH="$HOME/.local/bin:$PATH"'\'' >> ~/.bashrc'
+    echo '   source ~/.bashrc'
+    echo ""
+fi
+
+echo "═══════════════════════════════════════════════════════"
+echo "  ✅ Instalación completada"
+echo "═══════════════════════════════════════════════════════"
+echo ""
+echo "  📂 Instalado en:  $INSTALL_DIR"
+echo "  📦 venv en:       $VENV_DIR"
+echo ""
+echo "  ⏱️  Arranque del servicio: retrasado 20 s tras iniciar sesión"
+echo "     (systemd: ExecStartPre=/bin/sleep 20)"
+echo ""
+echo "  🆕 Nueva función v2.1.0: AUTO-APAGADO POR INACTIVIDAD"
+echo "     - Se activa/desactiva desde la GUI"
+echo "     - Detecta teclado/ratón (xprintidle)"
+echo "     - No apaga si hay multimedia reproduciéndose"
+echo ""
+if ! command -v xprintidle &>/dev/null; then
+    echo "  ⚠  RECOMENDADO: instala xprintidle para que funcione"
+    echo "     la detección de inactividad:"
+    echo "         sudo apt install xprintidle"
+    echo ""
+fi
+echo "  🖱️  Abrir la ventana:"
+echo "      - Clic en el icono de la bandeja"
+echo "      - Doble clic en el icono del escritorio"
+echo "      - Terminal:  $APP_SLUG"
+echo ""
+echo "  🗑️  Desinstalar:  ./uninstall.sh"
+echo ""
 
-    def __init__(self, root, start_hidden=False):
-        self.root = root
-        self.root.title(APP_NAME)
-        self.root.geometry("560x800")
-        self.root.minsize(500, 600)
-        self.root.resizable(True, True)
-        self.config = load_config()
-        self.alert_active = False
-        self.alert_window = None
-        self.info_window = None
-        self._paused_until = 0
-        self._force_quit = False
-        self._start_hidden = start_hidden
-
-        # Gestor de zoom (con valor guardado en config)
-        self.zoom_mgr = ZoomManager(self.root, self.config.get("zoom", 1.0))
-
-        self._build_ui()
-
-        # Aplicar zoom inicial DESPUÉS de crear la UI
-        self.zoom_mgr.apply()
-        self.zoom_mgr.add_listener(self._update_zoom_label)
-
-        self._setup_tray()
-        self._bind_zoom_keys()
-        self._schedule_check(1000)
-
-        if start_hidden:
-            self.root.after(500, self.hide_window)
-
-    def _setup_tray(self):
-        self.tray = TrayIcon(self)
-        self.tray.start()
-
-    # ----- Bindings de zoom -----
-    def _bind_zoom_keys(self):
-        self.root.bind("<Control-plus>", lambda e: self.zoom_in())
-        self.root.bind("<Control-equal>", lambda e: self.zoom_in())
-        self.root.bind("<Control-minus>", lambda e: self.zoom_out())
-        self.root.bind("<Control-0>", lambda e: self.zoom_reset())
-        self.root.bind("<Control-MouseWheel>", self._on_wheel)
-        self.root.bind("<Control-Button-4>", lambda e: self.zoom_in())
-        self.root.bind("<Control-Button-5>", lambda e: self.zoom_out())
-
-    def _on_wheel(self, event):
-        if event.delta > 0:
-            self.zoom_in()
-        else:
-            self.zoom_out()
-
-    # ----- API de zoom -----
-    def zoom_in(self):
-        self.zoom_mgr.zoom_in()
-        self._persist_zoom()
-
-    def zoom_out(self):
-        self.zoom_mgr.zoom_out()
-        self._persist_zoom()
-
-    def zoom_reset(self):
-        self.zoom_mgr.zoom_reset()
-        self._persist_zoom()
-
-    def _persist_zoom(self):
-        self.config["zoom"] = self.zoom_mgr.zoom
-        save_config(self.config)
-
-    def _update_zoom_label(self):
-        try:
-            self.lbl_zoom.config(text=f"{self.zoom_mgr.percent()}%")
-        except Exception:
-            pass
-
-    # ----- UI -----
-    def _build_ui(self):
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-
-        main = ttk.Frame(self.root, padding=16)
-        main.pack(fill="both", expand=True)
-
-        # ---- Cabecera con controles de zoom ----
-        header = ttk.Frame(main)
-        header.pack(fill="x", pady=(0, 6))
-
-        self.lbl_app = tk.Label(header, text=f"🔋  {APP_NAME}",
-                                font=("Arial", 20, "bold"))
-        self.lbl_app.pack(side="left")
-
-        zbtns = ttk.Frame(header)
-        zbtns.pack(side="right")
-
-        self.lbl_zoom = ttk.Label(zbtns, text="100%", font=("Arial", 10, "bold"))
-        self.lbl_zoom.pack(side="right", padx=4)
-
-        ttk.Button(zbtns, text="A+", width=4,
-                   command=self.zoom_in).pack(side="right", padx=1)
-        ttk.Button(zbtns, text="A−", width=4,
-                   command=self.zoom_out).pack(side="right", padx=1)
-        ttk.Button(zbtns, text="↺", width=3,
-                   command=self.zoom_reset).pack(side="right", padx=1)
-
-        self.lbl_sub = tk.Label(main,
-                                text=f"Versión {APP_VERSION}   |   Cuida la salud de tu batería",
-                                font=("Arial", 9, "italic"))
-        self.lbl_sub.pack(pady=(0, 10))
-
-        # Guardar referencia para actualizar su fuente con el zoom
-        self.zoom_mgr.register_font("_lbl_app", 20)
-        self.zoom_mgr.register_font("_lbl_sub", 9)
-        self.zoom_mgr.add_listener(self._refresh_custom_fonts)
-
-        # ---- Activar / desactivar ----
-        self.enabled_var = tk.BooleanVar(value=self.config["enabled"])
-        ttk.Checkbutton(main, text="Activar monitoreo de batería",
-                        variable=self.enabled_var,
-                        command=self._on_toggle_check).pack(anchor="w", pady=4)
-
-        ttk.Separator(main, orient="horizontal").pack(fill="x", pady=8)
-
-        # ---- Máximo ----
-        frame_max = ttk.Frame(main)
-        frame_max.pack(fill="x", pady=4)
-        ttk.Label(frame_max, text="Máximo de carga (%):").pack(side="left")
-        self.max_var = tk.IntVar(value=self.config["max_charge"])
-        spin_max = ttk.Spinbox(frame_max, from_=50, to=100,
-                               textvariable=self.max_var, width=6, justify="center")
-        spin_max.pack(side="right")
-        spin_max.bind("<FocusOut>", lambda e: self._save())
-        spin_max.bind("<Return>", lambda e: self._save())
-
-        # ---- Mínimo ----
-        frame_min = ttk.Frame(main)
-        frame_min.pack(fill="x", pady=4)
-        ttk.Label(frame_min, text="Mínimo de carga (%):").pack(side="left")
-        self.min_var = tk.IntVar(value=self.config["min_charge"])
-        spin_min = ttk.Spinbox(frame_min, from_=0, to=50,
-                               textvariable=self.min_var, width=6, justify="center")
-        spin_min.pack(side="right")
-        spin_min.bind("<FocusOut>", lambda e: self._save())
-        spin_min.bind("<Return>", lambda e: self._save())
-
-        # ---- Opciones ----
-        self.sound_var = tk.BooleanVar(value=self.config["sound_enabled"])
-        ttk.Checkbutton(main, text="Activar pitido de alerta",
-                        variable=self.sound_var,
-                        command=self._save).pack(anchor="w", pady=(8, 2))
-
-        self.fullscreen_var = tk.BooleanVar(value=self.config["fullscreen_alert"])
-        ttk.Checkbutton(main, text="Alerta a pantalla completa",
-                        variable=self.fullscreen_var,
-                        command=self._save).pack(anchor="w", pady=2)
-
-        # ---- Panel de información ----
-        info_frame = ttk.LabelFrame(main, text=" Información de la batería ",
-                                    padding=10)
-        info_frame.pack(fill="x", pady=8)
-
-        self.lbl_state = ttk.Label(info_frame, text="Estado: —")
-        self.lbl_state.pack(anchor="w")
-        self.lbl_level = ttk.Label(info_frame, text="Nivel: —")
-        self.lbl_level.pack(anchor="w")
-        self.lbl_energy_full = ttk.Label(info_frame, text="energy-full: —")
-        self.lbl_energy_full.pack(anchor="w")
-        self.lbl_capacity = ttk.Label(info_frame, text="capacity (salud): —")
-        self.lbl_capacity.pack(anchor="w")
-        self.lbl_cycles = ttk.Label(info_frame, text="charge-cycles: —")
-        self.lbl_cycles.pack(anchor="w")
-
-        # ---- Botones ----
-        btns = ttk.Frame(main)
-        btns.pack(pady=12)
-
-        ttk.Button(btns, text="💾  Guardar", command=self._save,
-                   width=14).grid(row=0, column=0, padx=4, pady=3)
-        ttk.Button(btns, text="📊  Ver informe completo",
-                   command=self.open_info_window,
-                   width=22).grid(row=0, column=1, padx=4, pady=3)
-        ttk.Button(btns, text="🧪  Probar alerta", command=self._test_alert,
-                   width=14).grid(row=1, column=0, padx=4, pady=3)
-        ttk.Button(btns, text="Ocultar en bandeja",
-                   command=self.hide_window,
-                   width=18).grid(row=1, column=1, padx=4, pady=3)
-
-        # Ayuda sobre zoom
-        ttk.Label(main,
-                  text="💡 Zoom: Ctrl + rueda del ratón  ó  Ctrl + / −  ó  botones A−/A+/↺",
-                  font=("Arial", 8, "italic"),
-                  foreground="#666").pack(pady=(6, 0))
-
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close_x)
-
-    def _refresh_custom_fonts(self):
-        """Actualiza las fuentes hardcoded cuando cambia el zoom."""
-        try:
-            self.lbl_app.config(font=("Arial", self.zoom_mgr.scaled(20), "bold"))
-            self.lbl_sub.config(font=("Arial", self.zoom_mgr.scaled(9), "italic"))
-            self.lbl_zoom.config(font=("Arial", self.zoom_mgr.scaled(10), "bold"))
-        except tk.TclError:
-            pass
-
-    # ----- Acciones públicas -----
-    def show_window(self):
-        try:
-            self.root.deiconify()
-            self.root.lift()
-            self.root.focus_force()
-        except Exception as e:
-            log.error(f"Error mostrando ventana: {e}")
-
-    def hide_window(self):
-        try:
-            self.root.withdraw()
-        except Exception as e:
-            log.error(f"Error ocultando ventana: {e}")
-
-    def toggle_enabled(self):
-        self.config["enabled"] = not self.config["enabled"]
-        self.enabled_var.set(self.config["enabled"])
-        save_config(self.config)
-        estado = "activado" if self.config["enabled"] else "desactivado"
-        log.info(f"Monitoreo {estado}")
-
-    def open_info_window(self):
-        if self.info_window is not None and self.info_window.win.winfo_exists():
-            self.info_window.refresh()
-            self.info_window.win.lift()
-            return
-        self.info_window = InfoWindow(self.root, self.zoom_mgr)
-
-    def ask_quit(self):
-        try:
-            self.root.deiconify()
-            self.root.lift()
-        except Exception:
-            pass
-        if messagebox.askyesno(
-            APP_NAME,
-            "¿Salir de Battery Guardian?\n\n"
-            "Dejará de vigilar la batería hasta que lo vuelvas a abrir\n"
-            "o reinicies el equipo."
-        ):
-            self.quit_app()
-
-    def quit_app(self):
-        self._force_quit = True
-        log.info("Cerrando Battery Guardian")
-        notify_systemd_stop()
-        try:
-            if self.tray:
-                self.tray.stop()
-        except Exception:
-            pass
-        try:
-            self.root.quit()
-            self.root.destroy()
-        except Exception:
-            pass
-
-    # ----- Callbacks -----
-    def _on_toggle_check(self):
-        self.config["enabled"] = self.enabled_var.get()
-        save_config(self.config)
-
-    def _save(self):
-        try:
-            maxv = int(self.max_var.get())
-            minv = int(self.min_var.get())
-        except Exception:
-            messagebox.showerror("Error", "Introduce números válidos.")
-            return
-        if minv >= maxv:
-            messagebox.showerror("Error",
-                                 "El mínimo debe ser menor que el máximo.")
-            return
-
-        self.config["max_charge"] = maxv
-        self.config["min_charge"] = minv
-        self.config["enabled"] = self.enabled_var.get()
-        self.config["sound_enabled"] = self.sound_var.get()
-        self.config["fullscreen_alert"] = self.fullscreen_var.get()
-        self.config["zoom"] = self.zoom_mgr.zoom
-        save_config(self.config)
-        log.info(f"Config guardada: máx {maxv}% mín {minv}% "
-                 f"zoom {self.zoom_mgr.percent()}%")
-
-    def _test_alert(self):
-        if self.alert_active:
-            return
-        self._save()
-        self._show_alert("disconnect")
-
-    def _on_close_x(self):
-        self.hide_window()
-        if not getattr(self, "_tray_hint_shown", False):
-            self._tray_hint_shown = True
-            try:
-                subprocess.Popen(
-                    ["notify-send", "-i", "battery", APP_NAME,
-                     "El programa sigue activo en la bandeja del sistema."],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
-
-    # ----- Bucle de chequeo -----
-    def _schedule_check(self, delay_ms):
-        self.root.after(delay_ms, self._check_battery)
-
-    def _check_battery(self):
-        info = get_battery_full_info()
-        state = info["state"]
-        level = info["percentage"]
-        charging = state in ("charging", "fully-charged")
-
-        if state is None or level is None:
-            self.lbl_state.config(text="Estado: ⚠ No se detectó batería")
-            self.lbl_level.config(text="Nivel: —")
-            self.lbl_energy_full.config(text="energy-full: —")
-            self.lbl_capacity.config(text="capacity (salud): —")
-            self.lbl_cycles.config(text="charge-cycles: —")
-        else:
-            estado_map = {
-                "charging": "🔌 Cargando",
-                "discharging": "🔋 Descargando",
-                "fully-charged": "✅ Completamente cargada",
-                "pending-charge": "⏳ Pendiente de carga",
-                "pending-discharge": "⏳ Pendiente de descarga",
-                "unknown": "❓ Desconocido",
-            }
-            self.lbl_state.config(text=f"Estado: {estado_map.get(state, state)}")
-            self.lbl_level.config(text=f"Nivel: {level}%")
-            if info["energy_full"] is not None:
-                self.lbl_energy_full.config(
-                    text=f"energy-full: {info['energy_full']:.2f} Wh")
-            else:
-                self.lbl_energy_full.config(text="energy-full: No disponible")
-            if info["capacity"] is not None:
-                self.lbl_capacity.config(
-                    text=f"capacity (salud): {info['capacity']:.2f} %")
-            else:
-                self.lbl_capacity.config(text="capacity (salud): No disponible")
-            if info["charge_cycles"] is not None:
-                self.lbl_cycles.config(
-                    text=f"charge-cycles: {info['charge_cycles']}")
-            else:
-                self.lbl_cycles.config(
-                    text="charge-cycles: No reportado por el hardware")
-
-        if self.tray:
-            self.tray.update(level=level, charging=charging,
-                             alert=self.alert_active)
-
-        now = time.time()
-        if (self.config["enabled"]
-                and not self.alert_active
-                and state is not None
-                and level is not None
-                and now >= self._paused_until):
-            if state in ("charging", "fully-charged") and \
-               level >= self.config["max_charge"]:
-                self._show_alert("disconnect")
-            elif state == "discharging" and \
-                 level <= self.config["min_charge"]:
-                self._show_alert("connect")
-
-        self._schedule_check(self.config["check_interval"] * 1000)
-
-    def _show_alert(self, alert_type):
-        self.alert_active = True
-        try:
-            self.root.deiconify()
-        except Exception:
-            pass
-        self.alert_window = AlertWindow(
-            self.root, self.config, alert_type,
-            self._alert_resolved, self.zoom_mgr)
-
-    def _alert_resolved(self):
-        self.alert_active = False
-        self.alert_window = None
-        self._paused_until = time.time() + 5
-
-
-# =========================================================
-#  MODO CLI
-# =========================================================
-def print_info_cli():
-    info = get_battery_full_info()
-    print("=" * 55)
-    print(f"  {APP_NAME} v{APP_VERSION} - Informe de batería")
-    print("=" * 55)
-    print(f"  Dispositivo:        {info['device']}")
-    print(f"  Estado:             {info['state']}")
-    print(f"  Nivel:              {info['percentage']}%")
-    print(f"  Energía actual:     {info['energy']} Wh")
-    print(f"  energy-full:        {info['energy_full']} Wh")
-    print(f"  energy-full-design: {info['energy_full_design']} Wh")
-    print(f"  capacity (salud):   {info['capacity']}%")
-    print(f"  charge-cycles:      {info['charge_cycles']}")
-    print(f"  Voltaje:            {info['voltage']} V")
-    print(f"  Temperatura:        {info['temperature']} °C")
-    print("=" * 55)
-
-
-# =========================================================
-#  MAIN
-# =========================================================
-def main():
-    setup_logging()
-
-    if "--info" in sys.argv:
-        print_info_cli()
-        return
-
-    start_hidden = "--hidden" in sys.argv
-
-    log.info(f"Iniciando {APP_NAME} v{APP_VERSION} "
-             f"(hidden={start_hidden}, systemd={is_running_under_systemd()})")
-
-    try:
-        root = tk.Tk()
-    except tk.TclError as e:
-        print(f"Error: no se pudo iniciar la interfaz gráfica ({e})")
-        sys.exit(1)
-
-    app = BatteryGuardianApp(root, start_hidden=start_hidden)
-    try:
-        root.mainloop()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        try:
-            if app.tray:
-                app.tray.stop()
-        except Exception:
-            pass
-    log.info(f"{APP_NAME} finalizado")
-
-
-if __name__ == "__main__":
-    main()
 
