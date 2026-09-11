@@ -7,7 +7,26 @@
 # Instalación manual:
 #   python3 -m venv venv
 #   ./venv/bin/pip install -r requirements.txt
+#
+# =========================================================
+#  DEPENDENCIAS DEL SISTEMA (NO son paquetes pip)
+# =========================================================
+# Estas se instalan con apt (NO con pip) y las verifica install.sh:
+#
+#   OBLIGATORIAS:
+#     sudo apt install python3 python3-venv python3-tk upower
+#
+#   RECOMENDADAS:
+#     sudo apt install xprintidle        # detección de inactividad
+#     sudo apt install xdotool x11-utils # detección de navegador en uso (v2.2.4)
+#     sudo apt install pulseaudio-utils  # pitido de alerta (paplay)
+#
+# =========================================================
+#  DEPENDENCIAS DE PYTHON (paquetes pip)
 # =========================================================
 
+# Icono en la bandeja del sistema (WiFi/Bluetooth)
 pystray>=0.19.5
+
+# Manipulación de imágenes para el icono dinámico de la bandeja
 Pillow>=9.0.0
