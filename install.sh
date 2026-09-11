@@ -1,7 +1,7 @@
 
 #!/bin/bash
 # =========================================================
-#  Battery Guardian - Instalador v2.2.1
+#  Battery Guardian - Instalador v2.2.4
 # =========================================================
 #  Instala el programa en un entorno virtual (venv) en:
 #      ~/Apps/Battery_Guardian/
@@ -14,7 +14,7 @@
 #
 #  DETECTA dependencias faltantes y pide permiso para instalarlas:
 #      - python3, python3-venv, python3-tk, upower  (OBLIGATORIAS)
-#      - xprintidle                                (RECOMENDADA)
+#      - xprintidle, xdotool, x11-utils            (RECOMENDADAS)
 # =========================================================
 set -e
 
@@ -54,7 +54,7 @@ print_info() { echo -e "   [i] $1"; }
 
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  🔋 Instalando $APP_NAME v2.2.1${NC}"
+echo -e "${BOLD}  🔋 Instalando $APP_NAME v2.2.4${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo -e "  Origen:  $PROJECT_DIR"
 echo -e "  Destino: $INSTALL_DIR"
@@ -67,6 +67,7 @@ echo ""
 echo -e "${BLUE}${BOLD}▶ [1/14] Comprobando dependencias del sistema...${NC}"
 echo ""
 
+# --- OBLIGATORIAS ---
 MISSING_REQUIRED=()
 
 if command -v python3 &>/dev/null; then
@@ -97,8 +98,10 @@ else
     MISSING_REQUIRED+=("upower")
 fi
 
+# --- RECOMENDADAS ---
 MISSING_RECOMMENDED=()
 
+# xprintidle (detección de inactividad)
 if command -v xprintidle &>/dev/null; then
     print_ok "xprintidle (detección de inactividad)"
 else
@@ -106,6 +109,23 @@ else
     MISSING_RECOMMENDED+=("xprintidle")
 fi
 
+# xdotool (detección de navegador en uso) - NUEVO v2.2.4
+if command -v xdotool &>/dev/null; then
+    print_ok "xdotool (detección de ventana activa / navegador)"
+else
+    print_warn "xdotool → NO INSTALADO (necesario para detectar navegador)"
+    MISSING_RECOMMENDED+=("xdotool")
+fi
+
+# x11-utils (xprop para pantalla completa) - NUEVO v2.2.4
+if command -v xprop &>/dev/null; then
+    print_ok "x11-utils (xprop para detectar pantalla completa)"
+else
+    print_warn "x11-utils → NO INSTALADO (necesario para detectar vídeo a pantalla completa)"
+    MISSING_RECOMMENDED+=("x11-utils")
+fi
+
+# --- Otras opcionales ---
 echo ""
 print_info "Otras dependencias opcionales:"
 
@@ -191,7 +211,7 @@ if [ ${#ALL_MISSING[@]} -gt 0 ]; then
                 || print_warn "No se pudieron instalar"
             echo ""
         else
-            print_warn "Continuando sin ellas (auto-apagado no funcionará)"
+            print_warn "Continuando sin ellas (auto-apagado y detección de navegador no funcionarán)"
             echo ""
         fi
     fi
@@ -453,10 +473,26 @@ else
     print_warn "Sudoers NO configurado (auto-apagado no funcionará)"
 fi
 
+# Verificar dependencias opcionales finales
+echo ""
+print_info "Estado de dependencias opcionales:"
+
 if command -v xprintidle &>/dev/null; then
-    print_ok "xprintidle instalado"
+    print_ok "xprintidle → detección de inactividad OK"
 else
     print_warn "xprintidle NO instalado (detección de inactividad limitada)"
+fi
+
+if command -v xdotool &>/dev/null; then
+    print_ok "xdotool → detección de navegador OK"
+else
+    print_warn "xdotool NO instalado (NO detectará navegador en uso)"
+fi
+
+if command -v xprop &>/dev/null; then
+    print_ok "xprop → detección de pantalla completa OK"
+else
+    print_warn "xprop NO instalado (NO detectará vídeo a pantalla completa)"
 fi
 echo ""
 
@@ -475,6 +511,11 @@ echo "  📂 Instalado en:   $INSTALL_DIR"
 echo "  📦 venv en:        $VENV_DIR"
 echo "  🔧 Sudoers en:     $SUDOERS_FILE"
 echo "  ⏱️  Arranque:      retrasado 20 s tras iniciar sesión"
+echo ""
+echo "  🆕 NUEVAS FUNCIONES v2.2.4:"
+echo "      - Detección de navegador en uso (NO apaga mientras navegas)"
+echo "      - Detecta YouTube, Netflix, Twitch, etc. en el título"
+echo "      - Detecta navegadores a pantalla completa"
 echo ""
 echo "  🖱️  Abrir el programa:"
 echo "      - Icono del escritorio"
