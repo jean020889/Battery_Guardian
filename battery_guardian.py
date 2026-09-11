@@ -2,28 +2,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Battery Guardian v2.2.3
+Battery Guardian v2.2.4
 =======================
 Cuida la salud de la batería de tu portátil Linux.
+
+NOVEDADES v2.2.4:
+- NUEVO: detecta si el navegador está en uso y NO apaga el equipo.
+  * Ventana activa es un navegador (Firefox, Chrome, Brave...).
+  * Cualquier ventana de navegador a pantalla completa.
+  * Título de ventana contiene servicio de vídeo (YouTube, Netflix...).
+- Nueva opción configurable: "Ignorar apagado si el navegador está en uso".
+- Estado del navegador visible en la GUI.
 
 NOVEDADES v2.2.3:
 - FIX CRÍTICO: el contador de apagado ahora dispara el apagado al llegar a 0.
 - FIX: botón "Apagar YA" ahora funciona correctamente.
 - Nuevo flag 'confirmed' separado de 'cancelled' en el diálogo.
-- Log mejorado al confirmar el apagado.
 
 NOVEDADES v2.2.2:
 - Fix del error 'latin-1' codec en el título del icono de bandeja.
-- Verificación de sudoers al arrancar: avisa si falta configuración.
+- Verificación de sudoers al arrancar.
 
 NOVEDADES v2.2.1:
 - Auto-apagado usa 'sudo poweroff --force --force' como método principal.
-- Múltiples métodos de apagado en cascada si el primero falla.
-
-NOVEDADES v2.2.0:
-- Zoom por defecto al 80 %.
-- Diálogo de apagado más grande y con texto escalable (legible).
-- Interfaz moderna con tema "clam", tarjetas y colores planos.
 
 Autor: Proyecto Battery Guardian
 Licencia: MIT
@@ -54,7 +55,7 @@ except ImportError:
 #  CONSTANTES
 # =========================================================
 APP_NAME = "Battery Guardian"
-APP_VERSION = "2.2.3"
+APP_VERSION = "2.2.4"
 SYSTEMD_SERVICE = "battery-guardian.service"
 SUDOERS_FILE = "/etc/sudoers.d/battery-guardian"
 POWEROFF_PATH = "/usr/sbin/poweroff"
@@ -79,6 +80,7 @@ DEFAULT_CONFIG = {
     "auto_shutdown_minutes": 10,
     "auto_shutdown_warning_seconds": 60,
     "auto_shutdown_check_interval": 15,
+    "ignore_browser": True,
 }
 
 ZOOM_MIN = 0.8
@@ -92,6 +94,23 @@ SOUND_CANDIDATES = [
     "/usr/share/sounds/freedesktop/stereo/complete.oga",
     "/usr/share/sounds/ubuntu/stereo/bell.ogg",
     "/usr/share/sounds/alsa/Front_Center.wav",
+]
+
+# Navegadores conocidos (comparación case-insensitive, por substring)
+BROWSER_CLASSES = [
+    "firefox", "firefox-esr", "google-chrome", "chrome", "chromium",
+    "chromium-browser", "brave-browser", "brave", "microsoft-edge",
+    "msedge", "opera", "vivaldi-stable", "vivaldi", "epiphany",
+    "midori", "falkon", "qutebrowser", "waterfox", "palemoon",
+    "librewolf", "tor-browser", "zen",
+]
+
+# Palabras clave en el título de ventana que indican vídeo/streaming
+VIDEO_KEYWORDS = [
+    "youtube", "netflix", "twitch", "vimeo", "dailymotion",
+    "prime video", "hbo", "disney+", "disney plus", "spotify",
+    "deezer", "soundcloud", "bandcamp", "crunchyroll",
+    "hbomax", "paramount+", "peacock", "apple tv",
 ]
 
 COLOR_BG = "#f5f7fa"
@@ -165,20 +184,15 @@ def notify_systemd_stop():
 
 
 # =========================================================
-#  SUDOERS (verificación de auto-apagado)
+#  SUDOERS
 # =========================================================
 def check_sudoers_configured() -> bool:
-    """
-    Comprueba si el archivo sudoers existe y si `sudo -n poweroff --help`
-    funciona sin pedir contraseña.
-    """
     if not os.path.exists(SUDOERS_FILE):
         return False
     try:
         result = subprocess.run(
             ["sudo", "-n", POWEROFF_PATH, "--help"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=5,
         )
         return result.returncode == 0
@@ -303,12 +317,155 @@ def play_sound():
 
 
 # =========================================================
-#  DETECCIÓN DE INACTIVIDAD Y MULTIMEDIA
+#  UTILIDADES X11 / VENTANAS
 # =========================================================
 def _cmd_exists(name):
     return shutil.which(name) is not None
 
 
+def _x11_available() -> bool:
+    return bool(os.environ.get("DISPLAY"))
+
+
+def get_active_window_id():
+    if not _x11_available() or not _cmd_exists("xdotool"):
+        return None
+    try:
+        wid = subprocess.check_output(
+            ["xdotool", "getactivewindow"],
+            text=True, timeout=3, stderr=subprocess.DEVNULL,
+        ).strip()
+        return wid or None
+    except Exception:
+        return None
+
+
+def get_window_class(wid):
+    if not wid or not _x11_available() or not _cmd_exists("xdotool"):
+        return None
+    try:
+        return subprocess.check_output(
+            ["xdotool", "getwindowclassname", wid],
+            text=True, timeout=3, stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return None
+
+
+def get_window_title(wid):
+    if not wid or not _x11_available() or not _cmd_exists("xdotool"):
+        return None
+    try:
+        return subprocess.check_output(
+            ["xdotool", "getwindowname", wid],
+            text=True, timeout=3, stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return None
+
+
+def is_browser_class(wm_class) -> bool:
+    if not wm_class:
+        return False
+    wm_low = wm_class.lower()
+    for b in BROWSER_CLASSES:
+        if b in wm_low:
+            return True
+    return False
+
+
+def is_window_fullscreen(wid) -> bool:
+    if not wid or not _x11_available() or not _cmd_exists("xprop"):
+        return False
+    try:
+        out = subprocess.check_output(
+            ["xprop", "-id", wid, "_NET_WM_STATE"],
+            text=True, timeout=3, stderr=subprocess.DEVNULL,
+        )
+        return "FULLSCREEN" in out.upper()
+    except Exception:
+        return False
+
+
+def get_all_visible_windows():
+    """Devuelve lista de (wid, wm_class, title) de ventanas visibles (X11)."""
+    if not _x11_available() or not _cmd_exists("xdotool"):
+        return []
+    try:
+        out = subprocess.check_output(
+            ["xdotool", "search", "--onlyvisible", "--name", ".*"],
+            text=True, timeout=4, stderr=subprocess.DEVNULL,
+        )
+        wids = [w.strip() for w in out.splitlines() if w.strip()]
+    except Exception:
+        return []
+
+    windows = []
+    for wid in wids:
+        wm_class = get_window_class(wid)
+        title = get_window_title(wid)
+        if wm_class or title:
+            windows.append((wid, wm_class or "", title or ""))
+    return windows
+
+
+def get_browser_status():
+    """
+    Devuelve un dict con el estado del navegador:
+      {
+        "in_use":        bool,
+        "reason":        str,   # motivo por el que se considera en uso
+        "active_class":  str,
+        "active_title":  str,
+      }
+    """
+    result = {
+        "in_use": False,
+        "reason": "",
+        "active_class": "",
+        "active_title": "",
+    }
+
+    if not _x11_available() or not _cmd_exists("xdotool"):
+        result["reason"] = "xdotool no disponible"
+        return result
+
+    # 1) Ventana activa
+    wid = get_active_window_id()
+    if wid:
+        wm_class = get_window_class(wid) or ""
+        title = get_window_title(wid) or ""
+        result["active_class"] = wm_class
+        result["active_title"] = title
+
+        if is_browser_class(wm_class):
+            result["in_use"] = True
+            result["reason"] = f"Ventana activa es navegador ({wm_class})"
+            return result
+
+    # 2) Cualquier ventana de navegador
+    for w, wm_class, title in get_all_visible_windows():
+        if not is_browser_class(wm_class):
+            continue
+        # a) Pantalla completa → vídeo probable
+        if is_window_fullscreen(w):
+            result["in_use"] = True
+            result["reason"] = f"Navegador a pantalla completa ({wm_class})"
+            return result
+        # b) Título con servicio de vídeo
+        title_low = title.lower()
+        for kw in VIDEO_KEYWORDS:
+            if kw in title_low:
+                result["in_use"] = True
+                result["reason"] = f"Título contiene '{kw}': {title[:60]}"
+                return result
+
+    return result
+
+
+# =========================================================
+#  DETECCIÓN DE INACTIVIDAD Y MULTIMEDIA
+# =========================================================
 def get_idle_seconds():
     if _cmd_exists("xprintidle"):
         try:
@@ -379,133 +536,83 @@ def apply_modern_styles(root):
 
     root.configure(bg=COLOR_BG)
 
-    style.configure(".",
-                    background=COLOR_BG,
-                    foreground=COLOR_TEXT,
+    style.configure(".", background=COLOR_BG, foreground=COLOR_TEXT,
                     fieldbackground=COLOR_CARD)
-
     style.configure("TFrame", background=COLOR_BG)
-    style.configure("Card.TFrame",
-                    background=COLOR_CARD,
-                    relief="flat",
-                    borderwidth=1)
-    style.configure("TLabel",
-                    background=COLOR_BG,
-                    foreground=COLOR_TEXT,
+    style.configure("Card.TFrame", background=COLOR_CARD,
+                    relief="flat", borderwidth=1)
+    style.configure("TLabel", background=COLOR_BG, foreground=COLOR_TEXT,
                     font=("DejaVu Sans", 11))
-    style.configure("Card.TLabel",
-                    background=COLOR_CARD,
-                    foreground=COLOR_TEXT,
-                    font=("DejaVu Sans", 11))
-    style.configure("Title.TLabel",
-                    background=COLOR_BG,
-                    foreground=COLOR_TEXT,
-                    font=("DejaVu Sans", 20, "bold"))
-    style.configure("Subtitle.TLabel",
-                    background=COLOR_BG,
-                    foreground=COLOR_MUTED,
-                    font=("DejaVu Sans", 10, "italic"))
-    style.configure("Section.TLabel",
-                    background=COLOR_BG,
-                    foreground=COLOR_PRIMARY,
-                    font=("DejaVu Sans", 13, "bold"))
-    style.configure("Muted.TLabel",
-                    background=COLOR_CARD,
-                    foreground=COLOR_MUTED,
-                    font=("DejaVu Sans", 10))
-    style.configure("Info.TLabel",
-                    background=COLOR_CARD,
-                    foreground=COLOR_TEXT,
-                    font=("DejaVu Sans", 11))
-    style.configure("Warn.TLabel",
-                    background=COLOR_CARD,
-                    foreground=COLOR_DANGER,
-                    font=("DejaVu Sans", 10, "bold"))
-    style.configure("Ok.TLabel",
-                    background=COLOR_CARD,
-                    foreground=COLOR_SUCCESS,
-                    font=("DejaVu Sans", 10, "bold"))
+    style.configure("Card.TLabel", background=COLOR_CARD,
+                    foreground=COLOR_TEXT, font=("DejaVu Sans", 11))
+    style.configure("Title.TLabel", background=COLOR_BG,
+                    foreground=COLOR_TEXT, font=("DejaVu Sans", 20, "bold"))
+    style.configure("Subtitle.TLabel", background=COLOR_BG,
+                    foreground=COLOR_MUTED, font=("DejaVu Sans", 10, "italic"))
+    style.configure("Section.TLabel", background=COLOR_BG,
+                    foreground=COLOR_PRIMARY, font=("DejaVu Sans", 13, "bold"))
+    style.configure("Muted.TLabel", background=COLOR_CARD,
+                    foreground=COLOR_MUTED, font=("DejaVu Sans", 10))
+    style.configure("Info.TLabel", background=COLOR_CARD,
+                    foreground=COLOR_TEXT, font=("DejaVu Sans", 11))
+    style.configure("Warn.TLabel", background=COLOR_CARD,
+                    foreground=COLOR_DANGER, font=("DejaVu Sans", 10, "bold"))
+    style.configure("Ok.TLabel", background=COLOR_CARD,
+                    foreground=COLOR_SUCCESS, font=("DejaVu Sans", 10, "bold"))
 
-    style.configure("TButton",
-                    font=("DejaVu Sans", 11),
-                    padding=8,
-                    relief="flat",
-                    borderwidth=0)
+    style.configure("TButton", font=("DejaVu Sans", 11), padding=8,
+                    relief="flat", borderwidth=0)
     style.map("TButton",
               background=[("active", "#dbeafe"), ("!active", COLOR_CARD)],
               foreground=[("active", COLOR_PRIMARY), ("!active", COLOR_TEXT)])
 
-    style.configure("Primary.TButton",
-                    font=("DejaVu Sans", 11, "bold"),
-                    padding=10,
-                    relief="flat",
-                    background=COLOR_PRIMARY,
-                    foreground="white",
-                    borderwidth=0)
+    style.configure("Primary.TButton", font=("DejaVu Sans", 11, "bold"),
+                    padding=10, relief="flat", background=COLOR_PRIMARY,
+                    foreground="white", borderwidth=0)
     style.map("Primary.TButton",
               background=[("active", "#1d4ed8"), ("!active", COLOR_PRIMARY)],
               foreground=[("active", "white"), ("!active", "white")])
 
-    style.configure("Danger.TButton",
-                    font=("DejaVu Sans", 11, "bold"),
-                    padding=10,
-                    relief="flat",
-                    background=COLOR_DANGER,
-                    foreground="white",
-                    borderwidth=0)
+    style.configure("Danger.TButton", font=("DejaVu Sans", 11, "bold"),
+                    padding=10, relief="flat", background=COLOR_DANGER,
+                    foreground="white", borderwidth=0)
     style.map("Danger.TButton",
               background=[("active", "#b91c1c"), ("!active", COLOR_DANGER)],
               foreground=[("active", "white"), ("!active", "white")])
 
-    style.configure("Card.TLabelframe",
-                    background=COLOR_CARD,
-                    foreground=COLOR_TEXT,
-                    borderwidth=1,
-                    relief="solid",
-                    bordercolor=COLOR_BORDER,
-                    padding=12)
-    style.configure("Card.TLabelframe.Label",
-                    background=COLOR_BG,
+    style.configure("Card.TLabelframe", background=COLOR_CARD,
+                    foreground=COLOR_TEXT, borderwidth=1, relief="solid",
+                    bordercolor=COLOR_BORDER, padding=12)
+    style.configure("Card.TLabelframe.Label", background=COLOR_BG,
                     foreground=COLOR_PRIMARY,
                     font=("DejaVu Sans", 12, "bold"))
 
-    style.configure("Card.TCheckbutton",
-                    background=COLOR_CARD,
-                    foreground=COLOR_TEXT,
-                    font=("DejaVu Sans", 11))
-    style.map("Card.TCheckbutton",
-              background=[("active", COLOR_CARD)],
+    style.configure("Card.TCheckbutton", background=COLOR_CARD,
+                    foreground=COLOR_TEXT, font=("DejaVu Sans", 11))
+    style.map("Card.TCheckbutton", background=[("active", COLOR_CARD)],
               foreground=[("active", COLOR_TEXT)])
 
-    style.configure("TCheckbutton",
-                    background=COLOR_BG,
-                    foreground=COLOR_TEXT,
-                    font=("DejaVu Sans", 11))
-    style.map("TCheckbutton",
-              background=[("active", COLOR_BG)],
+    style.configure("TCheckbutton", background=COLOR_BG,
+                    foreground=COLOR_TEXT, font=("DejaVu Sans", 11))
+    style.map("TCheckbutton", background=[("active", COLOR_BG)],
               foreground=[("active", COLOR_TEXT)])
 
     style.configure("TSeparator", background=COLOR_BORDER)
-
-    style.configure("TSpinbox",
-                    fieldbackground=COLOR_CARD,
-                    background=COLOR_CARD,
-                    foreground=COLOR_TEXT,
-                    arrowcolor=COLOR_TEXT,
-                    bordercolor=COLOR_BORDER,
+    style.configure("TSpinbox", fieldbackground=COLOR_CARD,
+                    background=COLOR_CARD, foreground=COLOR_TEXT,
+                    arrowcolor=COLOR_TEXT, bordercolor=COLOR_BORDER,
                     font=("DejaVu Sans", 11))
-
     return style
 
 
 # =========================================================
-#  DIÁLOGO DE CUENTA ATRÁS (GRANDE Y LEGIBLE)
+#  DIÁLOGO DE CUENTA ATRÁS
 # =========================================================
 class ShutdownCountdownDialog:
 
     def __init__(self, parent, seconds, minutes_idle, zoom_mgr=None):
         self.cancelled = False
-        self.confirmed = False   # NUEVO: se activa cuando el contador llega a 0
+        self.confirmed = False
         self.remaining = seconds
         self.minutes_idle = minutes_idle
         self.zoom_mgr = zoom_mgr
@@ -537,8 +644,7 @@ class ShutdownCountdownDialog:
         header.pack(fill="x")
         header.pack_propagate(False)
 
-        tk.Label(header,
-                 text="⚠   APAGADO AUTOMÁTICO   ⚠",
+        tk.Label(header, text="⚠   APAGADO AUTOMÁTICO   ⚠",
                  font=("DejaVu Sans", fs(24), "bold"),
                  fg="white", bg=COLOR_DANGER).pack(expand=True)
 
@@ -547,7 +653,7 @@ class ShutdownCountdownDialog:
 
         tk.Label(body,
                  text=(f"El equipo lleva {self.minutes_idle:.1f} minutos inactivo\n"
-                       f"(sin teclado, ratón ni multimedia reproduciéndose)."),
+                       f"(sin teclado, ratón, multimedia ni navegador en uso)."),
                  font=("DejaVu Sans", fs(14)),
                  fg=COLOR_TEXT, bg=COLOR_CARD,
                  justify="center").pack(pady=(0, 26))
@@ -555,8 +661,7 @@ class ShutdownCountdownDialog:
         count_frame = tk.Frame(body, bg=COLOR_CARD)
         count_frame.pack(pady=6)
 
-        tk.Label(count_frame,
-                 text="El equipo se apagará en",
+        tk.Label(count_frame, text="El equipo se apagará en",
                  font=("DejaVu Sans", fs(15)),
                  fg=COLOR_MUTED, bg=COLOR_CARD).pack()
 
@@ -566,8 +671,7 @@ class ShutdownCountdownDialog:
                                   fg=COLOR_DANGER, bg=COLOR_CARD)
         self.lbl_count.pack()
 
-        tk.Label(count_frame,
-                 text="segundos",
+        tk.Label(count_frame, text="segundos",
                  font=("DejaVu Sans", fs(16)),
                  fg=COLOR_MUTED, bg=COLOR_CARD).pack()
 
@@ -580,26 +684,22 @@ class ShutdownCountdownDialog:
         btn_frame = tk.Frame(body, bg=COLOR_CARD)
         btn_frame.pack()
 
-        cancel_btn = tk.Button(
-            btn_frame,
+        cancel_btn = tk.Button(btn_frame,
             text="✕   CANCELAR apagado",
             font=("DejaVu Sans", fs(15), "bold"),
             bg=COLOR_SUCCESS, fg="white",
             activebackground="#15803d", activeforeground="white",
             relief="flat", padx=30, pady=16, borderwidth=0,
-            cursor="hand2",
-            command=self._cancel)
+            cursor="hand2", command=self._cancel)
         cancel_btn.grid(row=0, column=0, padx=10)
 
-        now_btn = tk.Button(
-            btn_frame,
+        now_btn = tk.Button(btn_frame,
             text="⏻   Apagar YA",
             font=("DejaVu Sans", fs(14), "bold"),
             bg="#6b7280", fg="white",
             activebackground="#4b5563", activeforeground="white",
             relief="flat", padx=24, pady=16, borderwidth=0,
-            cursor="hand2",
-            command=self._confirm_now)
+            cursor="hand2", command=self._confirm_now)
         now_btn.grid(row=0, column=1, padx=10)
 
         self.win.bind("<Escape>", lambda e: self._cancel())
@@ -608,10 +708,8 @@ class ShutdownCountdownDialog:
         self._tick()
 
     def _tick(self):
-        # Si ya se canceló o confirmó, parar
         if self.cancelled or self.confirmed:
             return
-        # Si ya llegó a 0, confirmar automáticamente
         if self.remaining <= 0:
             self._confirm_now()
             return
@@ -689,10 +787,20 @@ class AutoShutdownManager:
         if time.time() < self._warning_until:
             return
 
+        # 1) ¿Multimedia reproduciéndose? (audio/vídeo)
         if is_multimedia_playing():
             log.info("AutoShutdown: multimedia activa, no se apaga")
             return
 
+        # 2) ¿Navegador en uso?
+        if cfg.get("ignore_browser", True):
+            browser = get_browser_status()
+            if browser.get("in_use"):
+                log.info(f"AutoShutdown: navegador en uso -> "
+                         f"{browser['reason']}, no se apaga")
+                return
+
+        # 3) ¿Cuánto tiempo inactivo?
         idle = get_idle_seconds()
         if idle < 0:
             return
@@ -711,8 +819,7 @@ class AutoShutdownManager:
     def _run_dialog(self, idle_s, warn_s):
         try:
             dlg = ShutdownCountdownDialog(
-                self.app.root, warn_s, idle_s / 60.0,
-                self.app.zoom_mgr)
+                self.app.root, warn_s, idle_s / 60.0, self.app.zoom_mgr)
             self.app.root.wait_window(dlg.win)
 
             if dlg.confirmed:
@@ -722,7 +829,6 @@ class AutoShutdownManager:
                 self._warning_until = time.time() + 60
                 log.info("AutoShutdown cancelado por el usuario")
             else:
-                # No debería pasar, pero por seguridad
                 log.warning("AutoShutdown: dialogo cerrado sin decision -> apagando")
                 self._do_shutdown()
         except Exception as e:
@@ -731,17 +837,6 @@ class AutoShutdownManager:
             self._dialog_active = False
 
     def _do_shutdown(self):
-        """
-        Apaga el equipo usando varios métodos en cascada:
-        1. sudo -n /usr/sbin/poweroff --force --force
-        2. sudo -n /sbin/poweroff --force --force
-        3. sudo -n poweroff --force --force
-        4. pkexec poweroff --force --force
-        5. sudo -n systemctl poweroff --force --force
-        6. systemctl poweroff --force --force
-        7. sudo -n shutdown -h now
-        8. shutdown -h now
-        """
         methods = [
             ["sudo", "-n", "/usr/sbin/poweroff", "--force", "--force"],
             ["sudo", "-n", "/sbin/poweroff", "--force", "--force"],
@@ -752,25 +847,19 @@ class AutoShutdownManager:
             ["sudo", "-n", "shutdown", "-h", "now"],
             ["shutdown", "-h", "now"],
         ]
-
         for i, cmd in enumerate(methods, 1):
             try:
                 log.warning(f"AutoShutdown: intentando metodo {i}: {' '.join(cmd)}")
                 result = subprocess.run(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=10,
-                    text=True,
-                )
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=10, text=True)
                 if result.returncode == 0:
                     log.warning(f"AutoShutdown: apagado iniciado con {' '.join(cmd)}")
                     return
                 else:
                     err = result.stderr.strip() if result.stderr else "(sin stderr)"
-                    log.warning(
-                        f"AutoShutdown: metodo {i} fallo "
-                        f"(rc={result.returncode}): {err}")
+                    log.warning(f"AutoShutdown: metodo {i} fallo "
+                                f"(rc={result.returncode}): {err}")
             except FileNotFoundError:
                 log.warning(f"AutoShutdown: comando no encontrado: {cmd[0]}")
                 continue
@@ -780,7 +869,6 @@ class AutoShutdownManager:
             except Exception as e:
                 log.warning(f"AutoShutdown: error con {' '.join(cmd)}: {e}")
                 continue
-
         log.error("AutoShutdown: NINGUN metodo de apagado funciono.")
         log.error(f"AutoShutdown: configura sudoers con: {SUDOERS_FILE}")
 
@@ -912,7 +1000,6 @@ class AlertWindow:
 
         bg = "#8B0000" if alert_type == "disconnect" else "#B8860B"
         self.win.configure(bg=bg)
-
         try:
             self.win.grab_set()
         except Exception:
@@ -942,8 +1029,7 @@ class AlertWindow:
                                      font=("DejaVu Sans", fs(16)),
                                      fg="#FFFFCC", bg=bg, justify="center")
         self.status_label.pack(pady=20)
-        self.lbl_hint = tk.Label(
-            frame,
+        self.lbl_hint = tk.Label(frame,
             text="Esta ventana se cerrará automáticamente al realizar la acción.",
             font=("DejaVu Sans", fs(14), "italic"),
             fg="#EEEEEE", bg=bg)
@@ -1116,15 +1202,15 @@ class InfoWindow:
         idle = get_idle_seconds()
         media = is_multimedia_playing()
         sudoers_ok = check_sudoers_configured()
-        text = self._format_info(info, idle, media, sudoers_ok)
+        browser = get_browser_status()
+        text = self._format_info(info, idle, media, sudoers_ok, browser)
         self.text.config(state="normal")
         self.text.delete("1.0", "end")
         self.text.insert("1.0", text)
         self.text.config(state="disabled")
 
     @staticmethod
-    def _format_info(info: dict, idle_s: float, media: bool,
-                     sudoers_ok: bool) -> str:
+    def _format_info(info, idle_s, media, sudoers_ok, browser) -> str:
         def fnum(v, unidad="", decimales=2):
             if v is None:
                 return "No disponible"
@@ -1155,6 +1241,7 @@ class InfoWindow:
         lines.append(f"  Tiempo restante:    {fstr(info['time_to_empty'])}")
         lines.append(f"  Tiempo a completa:  {fstr(info['time_to_full'])}")
         lines.append("")
+
         lines.append("═" * 62)
         lines.append("  SALUD DE LA BATERÍA")
         lines.append("═" * 62)
@@ -1182,7 +1269,7 @@ class InfoWindow:
             lines.append("")
 
         lines.append("═" * 62)
-        lines.append("  INACTIVIDAD")
+        lines.append("  INACTIVIDAD Y MULTIMEDIA")
         lines.append("═" * 62)
         if idle_s < 0:
             lines.append("  Tiempo inactivo:    No disponible (falta xprintidle)")
@@ -1191,6 +1278,25 @@ class InfoWindow:
             secs = int(idle_s % 60)
             lines.append(f"  Tiempo inactivo:    {mins} min {secs} s")
         lines.append(f"  Multimedia activa:  {'🎵 SÍ' if media else '🔇 No'}")
+        lines.append("")
+
+        lines.append("═" * 62)
+        lines.append("  NAVEGADOR")
+        lines.append("═" * 62)
+        if not _cmd_exists("xdotool"):
+            lines.append("  Estado:             ⚠ xdotool NO instalado")
+            lines.append("      Instálalo con: sudo apt install xdotool x11-utils")
+        else:
+            if browser.get("in_use"):
+                lines.append(f"  En uso:             🌐 SÍ")
+                lines.append(f"  Motivo:             {browser.get('reason', '')}")
+            else:
+                lines.append(f"  En uso:             ❌ No")
+            if browser.get("active_class"):
+                lines.append(f"  Ventana activa:     {browser['active_class']}")
+            if browser.get("active_title"):
+                t = browser['active_title'][:50]
+                lines.append(f"  Título activo:      {t}")
         lines.append("")
 
         lines.append("═" * 62)
@@ -1255,41 +1361,23 @@ class TrayIcon:
         self.icon = pystray.Icon(
             name="battery_guardian",
             icon=make_tray_image(level=None),
-            title=APP_NAME,
-            menu=menu)
+            title=APP_NAME, menu=menu)
 
-    def _on_show(self, icon=None, item=None):
-        self.app.root.after(0, self.app.show_window)
-
-    def _on_hide(self, icon=None, item=None):
-        self.app.root.after(0, self.app.hide_window)
-
-    def _on_toggle(self, icon=None, item=None):
-        self.app.root.after(0, self.app.toggle_enabled)
-
-    def _on_toggle_shutdown(self, icon=None, item=None):
-        self.app.root.after(0, self.app.toggle_auto_shutdown)
-
-    def _on_info(self, icon=None, item=None):
-        self.app.root.after(0, self.app.open_info_window)
-
-    def _on_zoom_in(self, icon=None, item=None):
-        self.app.root.after(0, self.app.zoom_in)
-
-    def _on_zoom_out(self, icon=None, item=None):
-        self.app.root.after(0, self.app.zoom_out)
-
-    def _on_zoom_reset(self, icon=None, item=None):
-        self.app.root.after(0, self.app.zoom_reset)
-
-    def _on_quit(self, icon=None, item=None):
-        self.app.root.after(0, self.app.ask_quit)
+    def _on_show(self, icon=None, item=None): self.app.root.after(0, self.app.show_window)
+    def _on_hide(self, icon=None, item=None): self.app.root.after(0, self.app.hide_window)
+    def _on_toggle(self, icon=None, item=None): self.app.root.after(0, self.app.toggle_enabled)
+    def _on_toggle_shutdown(self, icon=None, item=None): self.app.root.after(0, self.app.toggle_auto_shutdown)
+    def _on_info(self, icon=None, item=None): self.app.root.after(0, self.app.open_info_window)
+    def _on_zoom_in(self, icon=None, item=None): self.app.root.after(0, self.app.zoom_in)
+    def _on_zoom_out(self, icon=None, item=None): self.app.root.after(0, self.app.zoom_out)
+    def _on_zoom_reset(self, icon=None, item=None): self.app.root.after(0, self.app.zoom_reset)
+    def _on_quit(self, icon=None, item=None): self.app.root.after(0, self.app.ask_quit)
 
     def start(self):
         if self.icon is None:
             return
-        self._thread = threading.Thread(
-            target=self.icon.run, daemon=True, name="tray-icon")
+        self._thread = threading.Thread(target=self.icon.run, daemon=True,
+                                        name="tray-icon")
         self._thread.start()
         log.info("Icono de bandeja iniciado")
 
@@ -1311,8 +1399,6 @@ class TrayIcon:
             self.icon.icon = make_tray_image(level=level, charging=charging,
                                              alert=alert)
             state_txt = "cargando" if charging else "descargando"
-            # Usamos guion normal '-' en lugar de em-dash para evitar
-            # el error 'latin-1' codec can't encode character '\u2014'
             level_txt = f"{level}%" if level is not None else "-"
             self.icon.title = f"{APP_NAME} - {level_txt} ({state_txt})"
         except Exception as e:
@@ -1327,7 +1413,7 @@ class BatteryGuardianApp:
     def __init__(self, root, start_hidden=False):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("660x1050")
+        self.root.geometry("660x1120")
         self.root.minsize(600, 760)
         self.root.resizable(True, True)
         self.config = load_config()
@@ -1339,7 +1425,6 @@ class BatteryGuardianApp:
         self._start_hidden = start_hidden
 
         apply_modern_styles(self.root)
-
         self.zoom_mgr = ZoomManager(self.root, self.config.get("zoom", 0.8))
 
         self._build_ui()
@@ -1353,29 +1438,24 @@ class BatteryGuardianApp:
         self.auto_shutdown = AutoShutdownManager(self)
         self.auto_shutdown.start()
 
-        # Verificación de sudoers al arrancar
         self._check_sudoers_on_startup()
 
         if start_hidden:
             self.root.after(500, self.hide_window)
 
     def _check_sudoers_on_startup(self):
-        """Avisa si el auto-apagado no podrá funcionar por falta de sudoers."""
         if self.config.get("auto_shutdown_enabled", False):
             if not check_sudoers_configured():
                 log.warning("Auto-apagado activado pero sudoers NO configurado")
-                self.root.after(
-                    1500,
-                    lambda: messagebox.showwarning(
-                        APP_NAME,
-                        "El auto-apagado está ACTIVADO pero el archivo sudoers\n"
-                        "NO está configurado. El equipo NO se apagará.\n\n"
-                        "Soluciónalo ejecutando:\n\n"
-                        "  sudo bash -c 'echo \"$USER ALL=(ALL) NOPASSWD: "
-                        "/usr/sbin/poweroff\" > /etc/sudoers.d/battery-guardian'\n"
-                        "  sudo chmod 0440 /etc/sudoers.d/battery-guardian\n\n"
-                        "O reinstala con ./install.sh")
-                )
+                self.root.after(1500, lambda: messagebox.showwarning(
+                    APP_NAME,
+                    "El auto-apagado está ACTIVADO pero el archivo sudoers\n"
+                    "NO está configurado. El equipo NO se apagará.\n\n"
+                    "Soluciónalo ejecutando:\n\n"
+                    "  sudo bash -c 'echo \"$USER ALL=(ALL) NOPASSWD: "
+                    "/usr/sbin/poweroff\" > /etc/sudoers.d/battery-guardian'\n"
+                    "  sudo chmod 0440 /etc/sudoers.d/battery-guardian\n\n"
+                    "O reinstala con ./install.sh"))
 
     def _setup_tray(self):
         self.tray = TrayIcon(self)
@@ -1426,16 +1506,13 @@ class BatteryGuardianApp:
         scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         self.scroll_frame = ttk.Frame(canvas, padding=20)
 
-        self.scroll_frame.bind(
-            "<Configure>",
+        self.scroll_frame.bind("<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
-
-        canvas.bind_all(
-            "<MouseWheel>",
+        canvas.bind_all("<MouseWheel>",
             lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         main = self.scroll_frame
@@ -1459,37 +1536,35 @@ class BatteryGuardianApp:
         ttk.Button(zbtns, text="↺", width=3,
                    command=self.zoom_reset).pack(side="right", padx=1)
 
-        self.lbl_sub = ttk.Label(
-            main,
+        self.lbl_sub = ttk.Label(main,
             text=f"Versión {APP_VERSION}   ·   Cuida la salud de tu batería",
             style="Subtitle.TLabel")
         self.lbl_sub.pack(pady=(0, 14))
 
+        # --------- Tarjeta 1: Control ---------
         card1 = ttk.LabelFrame(main, text="  Control de monitoreo  ",
                                style="Card.TLabelframe")
         card1.pack(fill="x", pady=8)
 
         self.enabled_var = tk.BooleanVar(value=self.config["enabled"])
-        ttk.Checkbutton(card1,
-                        text="Activar monitoreo de batería",
+        ttk.Checkbutton(card1, text="Activar monitoreo de batería",
                         variable=self.enabled_var,
                         style="Card.TCheckbutton",
                         command=self._on_toggle_check).pack(anchor="w", pady=2)
 
         self.sound_var = tk.BooleanVar(value=self.config["sound_enabled"])
-        ttk.Checkbutton(card1,
-                        text="Activar pitido de alerta",
+        ttk.Checkbutton(card1, text="Activar pitido de alerta",
                         variable=self.sound_var,
                         style="Card.TCheckbutton",
                         command=self._save).pack(anchor="w", pady=2)
 
         self.fullscreen_var = tk.BooleanVar(value=self.config["fullscreen_alert"])
-        ttk.Checkbutton(card1,
-                        text="Alerta a pantalla completa",
+        ttk.Checkbutton(card1, text="Alerta a pantalla completa",
                         variable=self.fullscreen_var,
                         style="Card.TCheckbutton",
                         command=self._save).pack(anchor="w", pady=2)
 
+        # --------- Tarjeta 2: Límites ---------
         card2 = ttk.LabelFrame(main, text="  Límites de carga  ",
                                style="Card.TLabelframe")
         card2.pack(fill="x", pady=8)
@@ -1518,6 +1593,7 @@ class BatteryGuardianApp:
         sp_min.bind("<FocusOut>", lambda e: self._save())
         sp_min.bind("<Return>", lambda e: self._save())
 
+        # --------- Tarjeta 3: Auto-apagado ---------
         card3 = ttk.LabelFrame(main, text="  Auto-apagado por inactividad  ",
                                style="Card.TLabelframe")
         card3.pack(fill="x", pady=8)
@@ -1557,6 +1633,16 @@ class BatteryGuardianApp:
         sp2.bind("<FocusOut>", lambda e: self._save())
         sp2.bind("<Return>", lambda e: self._save())
 
+        # NUEVA opción: ignorar si el navegador está en uso
+        self.ignore_browser_var = tk.BooleanVar(
+            value=self.config.get("ignore_browser", True))
+        ttk.Checkbutton(card3,
+                        text="NO apagar mientras el navegador esté en uso",
+                        variable=self.ignore_browser_var,
+                        style="Card.TCheckbutton",
+                        command=self._on_toggle_ignore_browser).pack(
+                            anchor="w", pady=(10, 4))
+
         self.lbl_idle = ttk.Label(card3, text="Inactividad: —",
                                   style="Muted.TLabel")
         self.lbl_idle.pack(anchor="w", pady=(8, 2))
@@ -1565,14 +1651,18 @@ class BatteryGuardianApp:
                                    style="Muted.TLabel")
         self.lbl_media.pack(anchor="w", pady=2)
 
-        # Estado del sudoers
+        self.lbl_browser = ttk.Label(card3, text="Navegador: —",
+                                     style="Muted.TLabel")
+        self.lbl_browser.pack(anchor="w", pady=2)
+
         self.lbl_sudoers = ttk.Label(card3, text="Sudoers: —",
                                      style="Muted.TLabel")
         self.lbl_sudoers.pack(anchor="w", pady=2)
 
         ttk.Label(card3,
-                  text=("💡 No apaga si hay multimedia reproduciéndose.\n"
-                        "   Muestra aviso con cuenta atrás y opción Cancelar."),
+                  text=("💡 No apaga si hay multimedia reproduciéndose\n"
+                        "   o si el navegador está en uso (vídeo/streaming).\n"
+                        "   Requiere 'xdotool' instalado para detectar el navegador."),
                   style="Muted.TLabel",
                   justify="left").pack(anchor="w", pady=(8, 4))
 
@@ -1580,6 +1670,7 @@ class BatteryGuardianApp:
                    command=self._test_shutdown_warning
                    ).pack(anchor="w", pady=(6, 2))
 
+        # --------- Tarjeta 4: Info batería ---------
         card4 = ttk.LabelFrame(main, text="  Información de la batería  ",
                                style="Card.TLabelframe")
         card4.pack(fill="x", pady=8)
@@ -1694,17 +1785,20 @@ class BatteryGuardianApp:
         self.config["auto_shutdown_enabled"] = self.shutdown_var.get()
         save_config(self.config)
 
+    def _on_toggle_ignore_browser(self):
+        self.config["ignore_browser"] = self.ignore_browser_var.get()
+        save_config(self.config)
+        log.info(f"ignore_browser = {self.config['ignore_browser']}")
+
     def _test_shutdown_warning(self):
         dlg = ShutdownCountdownDialog(self.root, 15, 10.0, self.zoom_mgr)
         self.root.wait_window(dlg.win)
         if dlg.confirmed:
-            messagebox.showinfo(
-                APP_NAME,
+            messagebox.showinfo(APP_NAME,
                 "Prueba finalizada.\n\n"
                 "En condiciones reales, aquí se apagaría el equipo.")
         else:
-            messagebox.showinfo(
-                APP_NAME,
+            messagebox.showinfo(APP_NAME,
                 "Prueba cancelada.\n\n"
                 "En condiciones reales, no se apagaría el equipo.")
 
@@ -1735,6 +1829,7 @@ class BatteryGuardianApp:
         self.config["auto_shutdown_enabled"] = self.shutdown_var.get()
         self.config["auto_shutdown_minutes"] = shut_min
         self.config["auto_shutdown_warning_seconds"] = shut_warn
+        self.config["ignore_browser"] = self.ignore_browser_var.get()
         save_config(self.config)
 
     def _test_alert(self):
@@ -1811,7 +1906,20 @@ class BatteryGuardianApp:
         self.lbl_media.config(
             text=f"Multimedia: {'🎵 reproduciéndose' if media else '🔇 silencio'}")
 
-        # Estado del sudoers
+        # Navegador
+        browser = get_browser_status()
+        if not _cmd_exists("xdotool"):
+            self.lbl_browser.config(
+                text="Navegador: ⚠ xdotool no instalado", style="Warn.TLabel")
+        elif browser.get("in_use"):
+            self.lbl_browser.config(
+                text=f"Navegador: 🌐 EN USO ({browser['reason'][:50]})",
+                style="Ok.TLabel")
+        else:
+            self.lbl_browser.config(
+                text="Navegador: ❌ no detectado en uso", style="Muted.TLabel")
+
+        # Sudoers
         sudoers_ok = check_sudoers_configured()
         if sudoers_ok:
             self.lbl_sudoers.config(
@@ -1865,9 +1973,10 @@ def print_info_cli():
     idle = get_idle_seconds()
     media = is_multimedia_playing()
     sudoers_ok = check_sudoers_configured()
-    print("=" * 55)
+    browser = get_browser_status()
+    print("=" * 60)
     print(f"  {APP_NAME} v{APP_VERSION} - Informe de batería")
-    print("=" * 55)
+    print("=" * 60)
     print(f"  Dispositivo:        {info['device']}")
     print(f"  Estado:             {info['state']}")
     print(f"  Nivel:              {info['percentage']}%")
@@ -1878,14 +1987,17 @@ def print_info_cli():
     print(f"  charge-cycles:      {info['charge_cycles']}")
     print(f"  Voltaje:            {info['voltage']} V")
     print(f"  Temperatura:        {info['temperature']} °C")
-    print("-" * 55)
+    print("-" * 60)
     if idle >= 0:
         print(f"  Inactividad:        {int(idle // 60)} min {int(idle % 60)} s")
     else:
         print(f"  Inactividad:        no disponible")
     print(f"  Multimedia activa:  {'SÍ' if media else 'No'}")
+    print(f"  Navegador en uso:   {'SÍ' if browser.get('in_use') else 'No'}")
+    if browser.get("in_use"):
+        print(f"      Motivo:         {browser.get('reason', '')}")
     print(f"  Sudoers:            {'✓ OK' if sudoers_ok else '✗ NO CONFIGURADO'}")
-    print("=" * 55)
+    print("=" * 60)
 
 
 # =========================================================
