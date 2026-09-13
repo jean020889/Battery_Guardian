@@ -2,18 +2,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Battery Guardian v2.2.7
+Battery Guardian v2.2.8
 =======================
 Cuida la salud de la batería de tu portátil Linux.
 
-NOVEDADES v2.2.7:
-- Interfaz REDISEÑADA en 3 columnas (dashboard horizontal).
-- Toda la información visible de un vistazo, sin scroll vertical.
-- La ventana se adapta al ancho de la pantalla.
-- Detección de VLC/mpv/reproductores multimedia (por proceso y ventana).
-- Detección de carga mejorada (pending-charge, fully-charged).
-- Detección de navegador configurable: any / video / off.
-- Botón "Cerrar alerta" manual en los avisos de batería (80% / 15%).
+NOVEDADES v2.2.8:
+- Toggle buttons interactivos (cambian de color al activar/desactivar).
+- Diálogo de apagado con botón gigante STOP para cancelar fácilmente.
+- Zoom funcional en TODO el texto de la ventana (estilos ttk incluidos).
+- Informe a pantalla completa con dashboard en 3 columnas.
+- Detección de VLC/mpv/reproductores multimedia (proceso + ventana).
+- Botón "Cerrar alerta" manual en los avisos de batería (80% / 20%).
 
 Autor: Proyecto Battery Guardian
 Licencia: MIT
@@ -44,7 +43,7 @@ except ImportError:
 # CONSTANTES
 # =========================================================
 APP_NAME = "Battery Guardian"
-APP_VERSION = "2.2.7"
+APP_VERSION = "2.2.8"
 SYSTEMD_SERVICE = "battery-guardian.service"
 SUDOERS_FILE = "/etc/sudoers.d/battery-guardian"
 POWEROFF_PATH = "/usr/sbin/poweroff"
@@ -76,7 +75,7 @@ DEFAULT_CONFIG = {
 ZOOM_MIN = 0.8
 ZOOM_MAX = 2.5
 ZOOM_STEP = 0.1
-MIN_FONT_SIZE = 10
+MIN_FONT_SIZE = 9
 
 SOUND_CANDIDATES = [
     "/usr/share/sounds/freedesktop/stereo/bell.oga",
@@ -118,7 +117,7 @@ MEDIA_PLAYER_CLASSES = [
     "kaffeine", "xine", "ffplay",
 ]
 
-# Paleta moderna (Dark theme)
+# Paleta moderna
 COLOR_BG = "#0f172a"
 COLOR_PANEL = "#1e293b"
 COLOR_CARD = "#1e293b"
@@ -129,6 +128,8 @@ COLOR_SUCCESS = "#22c55e"
 COLOR_WARN = "#eab308"
 COLOR_DANGER = "#ef4444"
 COLOR_BORDER = "#334155"
+COLOR_BTN_OFF = "#475569"
+COLOR_BTN_ON = "#22c55e"
 
 
 # =========================================================
@@ -564,6 +565,96 @@ def is_multimedia_playing() -> bool:
 
 
 # =========================================================
+# GESTOR DE ZOOM GLOBAL (afecta a TODO el texto)
+# =========================================================
+class ZoomManager:
+    """
+    Zoom global: actualiza los tamaños de:
+    - Todos los estilos ttk definidos (TLabel, Card.TLabel, etc.)
+    - Widgets tk registrados (tk.Label, tk.Button con font=...)
+    """
+
+    # Estilos ttk con sus tamaños base
+    BASE_STYLE_FONTS = {
+        "TLabel": ("Sans Serif", 10, "normal"),
+        "Card.TLabel": ("Sans Serif", 10, "normal"),
+        "Title.TLabel": ("Sans Serif", 18, "bold"),
+        "Subtitle.TLabel": ("Sans Serif", 9, "italic"),
+        "Section.TLabel": ("Sans Serif", 12, "bold"),
+        "Muted.TLabel": ("Sans Serif", 9, "normal"),
+        "Info.TLabel": ("Sans Serif", 10, "normal"),
+        "Ok.TLabel": ("Sans Serif", 10, "bold"),
+        "Warn.TLabel": ("Sans Serif", 10, "bold"),
+        "BigVal.TLabel": ("Sans Serif", 22, "bold"),
+        "BigOk.TLabel": ("Sans Serif", 22, "bold"),
+        "BigWarn.TLabel": ("Sans Serif", 22, "bold"),
+        "BigDanger.TLabel": ("Sans Serif", 22, "bold"),
+        "TButton": ("Sans Serif", 10, "normal"),
+        "Primary.TButton": ("Sans Serif", 10, "bold"),
+        "Danger.TButton": ("Sans Serif", 10, "bold"),
+        "TCheckbutton": ("Sans Serif", 10, "normal"),
+        "Card.TCheckbutton": ("Sans Serif", 10, "normal"),
+        "Card.TLabelframe.Label": ("Sans Serif", 11, "bold"),
+        "TSpinbox": ("Sans Serif", 10, "normal"),
+        "TCombobox": ("Sans Serif", 10, "normal"),
+    }
+
+    def __init__(self, root: tk.Tk, style: ttk.Style, initial_zoom: float = 1.0):
+        self.root = root
+        self.style = style
+        self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, float(initial_zoom)))
+        self._widget_fonts = []  # (widget, family, base_size, weight)
+
+    def register_widget(self, widget, family: str, base_size: int,
+                        weight: str = "normal") -> None:
+        """Registra un widget tk para que su fuente se escale."""
+        self._widget_fonts.append((widget, family, base_size, weight))
+        # Aplicar inmediatamente
+        try:
+            widget.config(font=(family, self.scaled(base_size), weight))
+        except Exception:
+            pass
+
+    def scaled(self, base_size: int) -> int:
+        return max(MIN_FONT_SIZE, int(round(base_size * self.zoom)))
+
+    def set_zoom(self, value: float) -> None:
+        self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, round(float(value), 2)))
+        self.apply()
+
+    def zoom_in(self):
+        self.set_zoom(self.zoom + ZOOM_STEP)
+
+    def zoom_out(self):
+        self.set_zoom(self.zoom - ZOOM_STEP)
+
+    def zoom_reset(self):
+        self.set_zoom(1.0)
+
+    def percent(self) -> int:
+        return int(round(self.zoom * 100))
+
+    def apply(self) -> None:
+        # 1) Estilos ttk
+        for style_name, (family, base, weight) in self.BASE_STYLE_FONTS.items():
+            try:
+                self.style.configure(style_name,
+                                     font=(family, self.scaled(base), weight))
+            except Exception:
+                pass
+
+        # 2) Widgets tk registrados (labels, buttons con font=...)
+        alive = []
+        for widget, family, base, weight in self._widget_fonts:
+            try:
+                widget.config(font=(family, self.scaled(base), weight))
+                alive.append((widget, family, base, weight))
+            except Exception:
+                pass
+        self._widget_fonts = alive
+
+
+# =========================================================
 # ESTILOS MODERNOS
 # =========================================================
 def apply_modern_styles(root: tk.Tk) -> ttk.Style:
@@ -599,13 +690,13 @@ def apply_modern_styles(root: tk.Tk) -> ttk.Style:
     style.configure("Warn.TLabel", background=COLOR_PANEL,
                     foreground=COLOR_DANGER, font=("Sans Serif", 10, "bold"))
     style.configure("BigVal.TLabel", background=COLOR_PANEL,
-                    foreground=COLOR_TEXT, font=("Sans Serif", 16, "bold"))
+                    foreground=COLOR_TEXT, font=("Sans Serif", 22, "bold"))
     style.configure("BigOk.TLabel", background=COLOR_PANEL,
-                    foreground=COLOR_SUCCESS, font=("Sans Serif", 16, "bold"))
+                    foreground=COLOR_SUCCESS, font=("Sans Serif", 22, "bold"))
     style.configure("BigWarn.TLabel", background=COLOR_PANEL,
-                    foreground=COLOR_WARN, font=("Sans Serif", 16, "bold"))
+                    foreground=COLOR_WARN, font=("Sans Serif", 22, "bold"))
     style.configure("BigDanger.TLabel", background=COLOR_PANEL,
-                    foreground=COLOR_DANGER, font=("Sans Serif", 16, "bold"))
+                    foreground=COLOR_DANGER, font=("Sans Serif", 22, "bold"))
 
     style.configure("TButton", font=("Sans Serif", 10), padding=6, relief="flat")
     style.map("TButton",
@@ -648,42 +739,68 @@ def apply_modern_styles(root: tk.Tk) -> ttk.Style:
 
 
 # =========================================================
-# GESTOR DE ZOOM
+# TOGGLE BUTTON INTERACTIVO (en vez de Checkbutton)
 # =========================================================
-class ZoomManager:
-    def __init__(self, root: tk.Tk, initial_zoom: float = 1.0):
-        self.root = root
-        self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, float(initial_zoom)))
-        self._listeners = []
+class ToggleButton(tk.Frame):
+    """Botón que se ve activado/desactivado con color."""
 
-    def scaled(self, base_size: int) -> int:
-        return max(MIN_FONT_SIZE, int(base_size * self.zoom))
+    def __init__(self, parent, text: str, variable: tk.BooleanVar,
+                 command=None, zoom_mgr: ZoomManager = None,
+                 bg=COLOR_PANEL, width=32):
+        super().__init__(parent, bg=bg)
+        self.variable = variable
+        self.text_base = text
+        self.command = command
+        self.zoom_mgr = zoom_mgr
+        self.bg = bg
 
-    def add_listener(self, cb) -> None:
-        self._listeners.append(cb)
+        self.btn = tk.Button(
+            self,
+            text=self._label_for_state(),
+            font=("Sans Serif", 11, "bold"),
+            relief="flat", borderwidth=0,
+            cursor="hand2", padx=14, pady=10,
+            anchor="w", width=width,
+            command=self._on_click,
+        )
+        self.btn.pack(fill="x")
+        self._apply_color()
 
-    def apply(self) -> None:
-        for cb in self._listeners:
+        # Registrar en el ZoomManager
+        if zoom_mgr:
+            zoom_mgr.register_widget(self.btn, "Sans Serif", 11, "bold")
+            # El ancho también escala
+            self.btn.config(width=max(20, int(width * zoom_mgr.zoom / 1.0)))
+
+    def _label_for_state(self) -> str:
+        if self.variable.get():
+            return f"  ✓  {self.text_base}"
+        return f"  ○  {self.text_base}"
+
+    def _apply_color(self):
+        if self.variable.get():
+            self.btn.config(bg=COLOR_BTN_ON, fg="white",
+                            activebackground="#16a34a",
+                            activeforeground="white")
+        else:
+            self.btn.config(bg=COLOR_BTN_OFF, fg="white",
+                            activebackground=COLOR_BORDER,
+                            activeforeground="white")
+
+    def _on_click(self):
+        self.variable.set(not self.variable.get())
+        self.btn.config(text=self._label_for_state())
+        self._apply_color()
+        if self.command:
             try:
-                cb()
-            except Exception:
-                pass
+                self.command()
+            except Exception as e:
+                log.error(f"Error en toggle command: {e}")
 
-    def set_zoom(self, value: float) -> None:
-        self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, round(float(value), 2)))
-        self.apply()
-
-    def zoom_in(self) -> None:
-        self.set_zoom(self.zoom + ZOOM_STEP)
-
-    def zoom_out(self) -> None:
-        self.set_zoom(self.zoom - ZOOM_STEP)
-
-    def zoom_reset(self) -> None:
-        self.set_zoom(1.0)
-
-    def percent(self) -> int:
-        return int(round(self.zoom * 100))
+    def refresh(self):
+        """Refrescar estado desde la variable."""
+        self.btn.config(text=self._label_for_state())
+        self._apply_color()
 
 
 # =========================================================
@@ -808,24 +925,21 @@ class AlertWindow:
                  fg="#FECACA", bg=bg).pack(pady=8)
 
         if zoom_mgr:
-            zoom_mgr.add_listener(self._refresh_fonts)
+            zoom_mgr.register_widget(self.lbl_title, "Sans Serif", 36, "bold")
+            zoom_mgr.register_widget(self.lbl_msg, "Sans Serif", 20, "normal")
+            zoom_mgr.register_widget(self.status_label, "Sans Serif", 14, "normal")
+            zoom_mgr.register_widget(self.btn_close, "Sans Serif", 18, "bold")
+            zoom_mgr.add_listener(self._refresh_from_zoom)
 
         self._sound_loop()
         self._check_loop()
         log.info(f"Alerta mostrada: {alert_type}")
 
-    def _refresh_fonts(self):
+    def _refresh_from_zoom(self):
         if not self.win.winfo_exists():
             return
-        z = self.zoom_mgr
-        try:
-            if z:
-                self.lbl_title.config(font=("Sans Serif", z.scaled(36), "bold"))
-                self.lbl_msg.config(font=("Sans Serif", z.scaled(20)))
-                self.status_label.config(font=("Sans Serif", z.scaled(14)))
-                self.btn_close.config(font=("Sans Serif", z.scaled(18), "bold"))
-        except tk.TclError:
-            pass
+        # El ZoomManager ya actualiza las fuentes registradas.
+        pass
 
     def _sound_loop(self):
         if not self._running or not self.win.winfo_exists():
@@ -896,214 +1010,7 @@ class AlertWindow:
 
 
 # =========================================================
-# VENTANA DE INFORMACIÓN DETALLADA
-# =========================================================
-class InfoWindow:
-
-    def __init__(self, parent, zoom_mgr=None):
-        self.zoom_mgr = zoom_mgr
-        self.win = tk.Toplevel(parent)
-        self.win.title(f"{APP_NAME} - Información de la batería")
-        self.win.geometry("780x700")
-        self.win.minsize(560, 460)
-        self.win.configure(bg=COLOR_BG)
-
-        def fs(base):
-            if zoom_mgr:
-                return max(MIN_FONT_SIZE, zoom_mgr.scaled(base))
-            return max(MIN_FONT_SIZE, base)
-
-        main = ttk.Frame(self.win, padding=18)
-        main.pack(fill="both", expand=True)
-
-        header = ttk.Frame(main)
-        header.pack(fill="x", pady=(0, 10))
-        self.lbl_title = ttk.Label(header, text="📊  Información detallada",
-                                   style="Section.TLabel")
-        self.lbl_title.pack(side="left")
-        zbtns = ttk.Frame(header)
-        zbtns.pack(side="right")
-        self.lbl_zoom = ttk.Label(zbtns, text="100%")
-        self.lbl_zoom.pack(side="right", padx=4)
-        ttk.Button(zbtns, text="A+", width=4,
-                   command=self._zoom_in).pack(side="right", padx=1)
-        ttk.Button(zbtns, text="A−", width=4,
-                   command=self._zoom_out).pack(side="right", padx=1)
-        ttk.Button(zbtns, text="↺", width=3,
-                   command=self._zoom_reset).pack(side="right", padx=1)
-
-        self.text = tk.Text(main, wrap="word",
-                            font=("DejaVu Sans Mono", fs(11)),
-                            height=26, bg="#0b1220", fg="#e5e7eb",
-                            insertbackground="white", relief="flat",
-                            padx=14, pady=12)
-        self.text.pack(fill="both", expand=True)
-
-        btns = ttk.Frame(main)
-        btns.pack(pady=10)
-        ttk.Button(btns, text="🔄  Actualizar",
-                   command=self.refresh).grid(row=0, column=0, padx=4)
-        ttk.Button(btns, text="❌  Cerrar",
-                   command=self.win.destroy).grid(row=0, column=1, padx=4)
-
-        if zoom_mgr:
-            zoom_mgr.add_listener(self._refresh_fonts)
-
-        self._update_zoom_label()
-        self.refresh()
-
-    def _fs(self, base):
-        return self.zoom_mgr.scaled(base) if self.zoom_mgr else base
-
-    def _zoom_in(self):
-        if self.zoom_mgr:
-            self.zoom_mgr.zoom_in()
-            self._update_zoom_label()
-
-    def _zoom_out(self):
-        if self.zoom_mgr:
-            self.zoom_mgr.zoom_out()
-            self._update_zoom_label()
-
-    def _zoom_reset(self):
-        if self.zoom_mgr:
-            self.zoom_mgr.zoom_reset()
-            self._update_zoom_label()
-
-    def _update_zoom_label(self):
-        if self.zoom_mgr:
-            self.lbl_zoom.config(text=f"{self.zoom_mgr.percent()}%")
-
-    def _refresh_fonts(self):
-        if not self.win.winfo_exists():
-            return
-        try:
-            self.text.config(font=("DejaVu Sans Mono", self._fs(11)))
-            self._update_zoom_label()
-        except tk.TclError:
-            pass
-
-    def refresh(self):
-        info = get_battery_full_info()
-        idle = get_idle_seconds()
-        media = is_multimedia_playing()
-        sudoers_ok = check_sudoers_configured()
-        browser = get_browser_status()
-        text = self._format_info(info, idle, media, sudoers_ok, browser)
-        self.text.config(state="normal")
-        self.text.delete("1.0", "end")
-        self.text.insert("1.0", text)
-        self.text.config(state="disabled")
-
-    @staticmethod
-    def _format_info(info, idle_s, media, sudoers_ok, browser) -> str:
-        def fnum(v, unidad="", decimales=2):
-            if v is None:
-                return "No disponible"
-            return f"{v:.{decimales}f} {unidad}".strip()
-
-        def fstr(v):
-            return v if v else "No disponible"
-
-        estado_map = {
-            "charging": "🔌 Cargando",
-            "discharging": "🔋 Descargando",
-            "fully-charged": "✅ Completamente cargada",
-            "pending-charge": "⏳ Pendiente de carga",
-            "pending-discharge": "⏳ Pendiente de descarga",
-            "unknown": "❓ Desconocido",
-        }
-
-        lines = []
-        lines.append("═" * 62)
-        lines.append("  ESTADO ACTUAL")
-        lines.append("═" * 62)
-        lines.append(f"  Estado:             {estado_map.get(info['state'], fstr(info['state']))}")
-        lines.append(f"  Nivel de carga:     {fnum(info['percentage'], '%', 0)}")
-        lines.append(f"  Energía actual:     {fnum(info['energy'], 'Wh')}")
-        lines.append(f"  Potencia (rate):    {fnum(info['energy_rate'], 'W')}")
-        lines.append(f"  Voltaje:            {fnum(info['voltage'], 'V')}")
-        lines.append(f"  Temperatura:        {fnum(info['temperature'], '°C', 1)}")
-        lines.append(f"  Tiempo restante:    {fstr(info['time_to_empty'])}")
-        lines.append(f"  Tiempo a completa:  {fstr(info['time_to_full'])}")
-        lines.append("")
-
-        lines.append("═" * 62)
-        lines.append("  SALUD DE LA BATERÍA")
-        lines.append("═" * 62)
-        lines.append(f"  energy-full:        {fnum(info['energy_full'], 'Wh')}")
-        lines.append(f"  energy-full-design: {fnum(info['energy_full_design'], 'Wh')}")
-        lines.append(f"  capacity (salud):   {fnum(info['capacity'], '%')}")
-        cycles = info['charge_cycles']
-        lines.append(f"  charge-cycles:      "
-                     f"{cycles if cycles is not None else 'No reportado por el hardware'}")
-        lines.append("")
-
-        cap = info.get("capacity")
-        if cap is not None:
-            if cap >= 90:
-                salud = "🟢 Excelente"
-            elif cap >= 80:
-                salud = "🟡 Buena"
-            elif cap >= 60:
-                salud = "🟠 Aceptable (considera reemplazar pronto)"
-            elif cap >= 40:
-                salud = "🔴 Degradada (reemplazo recomendado)"
-            else:
-                salud = "⛔ Muy degradada (reemplazo urgente)"
-            lines.append(f"  Diagnóstico:        {salud}")
-            lines.append("")
-
-        lines.append("═" * 62)
-        lines.append("  INACTIVIDAD Y MULTIMEDIA")
-        lines.append("═" * 62)
-        if idle_s < 0:
-            lines.append("  Tiempo inactivo:    No disponible")
-        else:
-            lines.append(f"  Tiempo inactivo:    "
-                         f"{int(idle_s // 60)} min {int(idle_s % 60)} s")
-        lines.append(f"  Multimedia activa:  {'🎵 SÍ' if media else '🔇 No'}")
-        if is_media_player_running():
-            lines.append(f"  Reproductor activo: 🎬 SÍ (VLC/mpv/otro detectado)")
-        if is_media_player_window_visible():
-            lines.append(f"  Ventana media:      🖼️ SÍ (reproductor visible)")
-        lines.append("")
-
-        lines.append("═" * 62)
-        lines.append("  NAVEGADOR")
-        lines.append("═" * 62)
-        if not _cmd_exists("xdotool"):
-            lines.append("  Estado:             ⚠ xdotool NO instalado")
-        else:
-            lines.append(f"  En uso:             "
-                         f"{'🌐 SÍ' if browser.get('in_use') else '❌ No'}")
-            if browser.get("reason"):
-                lines.append(f"  Motivo:             {browser['reason'][:55]}")
-            if browser.get("active_class"):
-                lines.append(f"  Ventana activa:     {browser['active_class']}")
-        lines.append("")
-
-        lines.append("═" * 62)
-        lines.append("  AUTO-APAGADO")
-        lines.append("═" * 62)
-        if sudoers_ok:
-            lines.append("  Sudoers:            ✅ configurado (poweroff OK)")
-        else:
-            lines.append("  Sudoers:            ❌ NO configurado")
-            lines.append(f"      Ejecuta:  sudo bash -c 'echo \"$USER ALL=(ALL) "
-                         f"NOPASSWD: {POWEROFF_PATH}\" > {SUDOERS_FILE}'")
-        lines.append("")
-
-        lines.append("═" * 62)
-        lines.append("  DISPOSITIVO")
-        lines.append("═" * 62)
-        lines.append(f"  {info['device'] or 'No detectado'}")
-        lines.append("")
-        return "\n".join(lines)
-
-
-# =========================================================
-# DIÁLOGO CUENTA ATRÁS DE APAGADO
+# DIÁLOGO CUENTA ATRÁS DE APAGADO (con botón gigante STOP)
 # =========================================================
 class ShutdownCountdownDialog:
 
@@ -1124,7 +1031,8 @@ class ShutdownCountdownDialog:
         self.win.resizable(False, False)
         self.win.configure(bg=COLOR_PANEL)
 
-        w, h = 560, 400
+        # Tamaño más generoso
+        w, h = 720, 620
         self.win.update_idletasks()
         sw = self.win.winfo_screenwidth()
         sh = self.win.winfo_screenheight()
@@ -1134,44 +1042,80 @@ class ShutdownCountdownDialog:
         except Exception:
             pass
 
-        header = tk.Frame(self.win, bg=COLOR_DANGER, height=80)
+        # Cabecera
+        header = tk.Frame(self.win, bg=COLOR_DANGER, height=110)
         header.pack(fill="x")
         header.pack_propagate(False)
-        tk.Label(header, text="⚠   APAGADO AUTOMÁTICO   ⚠",
-                 font=("Sans Serif", fs(16), "bold"),
-                 fg="white", bg=COLOR_DANGER).pack(expand=True)
+        self.lbl_head = tk.Label(header,
+                 text="⚠   APAGADO AUTOMÁTICO   ⚠",
+                 font=("Sans Serif", fs(22), "bold"),
+                 fg="white", bg=COLOR_DANGER)
+        self.lbl_head.pack(expand=True)
 
         body = tk.Frame(self.win, bg=COLOR_PANEL, padx=30, pady=25)
         body.pack(fill="both", expand=True)
 
-        tk.Label(body,
-                 text=f"El equipo lleva {self.minutes_idle:.1f} minutos inactivo",
-                 font=("Sans Serif", fs(12)),
-                 fg=COLOR_TEXT, bg=COLOR_PANEL).pack(pady=(0, 10))
+        self.lbl_info = tk.Label(
+            body,
+            text=f"El equipo lleva {self.minutes_idle:.1f} minutos inactivo",
+            font=("Sans Serif", fs(14)),
+            fg=COLOR_TEXT, bg=COLOR_PANEL)
+        self.lbl_info.pack(pady=(0, 10))
 
         self.lbl_count = tk.Label(body, text=str(self.remaining),
-                                  font=("Sans Serif", fs(56), "bold"),
+                                  font=("Sans Serif", fs(72), "bold"),
                                   fg=COLOR_DANGER, bg=COLOR_PANEL)
         self.lbl_count.pack()
-        tk.Label(body, text="segundos",
-                 font=("Sans Serif", fs(12)),
-                 fg=COLOR_MUTED, bg=COLOR_PANEL).pack(pady=(0, 20))
+        self.lbl_secs = tk.Label(body, text="segundos",
+                 font=("Sans Serif", fs(14)),
+                 fg=COLOR_MUTED, bg=COLOR_PANEL)
+        self.lbl_secs.pack(pady=(0, 20))
 
-        btn_frame = tk.Frame(body, bg=COLOR_PANEL)
-        btn_frame.pack()
-        tk.Button(btn_frame, text="✕   CANCELAR",
-                  font=("Sans Serif", fs(12), "bold"),
-                  bg=COLOR_SUCCESS, fg="white", relief="flat",
-                  padx=25, pady=12, cursor="hand2",
-                  command=self._cancel).grid(row=0, column=0, padx=8)
-        tk.Button(btn_frame, text="⏻   Apagar YA",
-                  font=("Sans Serif", fs(12), "bold"),
-                  bg="#6b7280", fg="white", relief="flat",
-                  padx=25, pady=12, cursor="hand2",
-                  command=self._confirm_now).grid(row=0, column=1, padx=8)
+        # ----- BOTÓN GIGANTE DE STOP -----
+        self.btn_stop = tk.Button(
+            body,
+            text="🛑  DETENER APAGADO  🛑",
+            font=("Sans Serif", fs(26), "bold"),
+            bg="#22c55e", fg="white",
+            activebackground="#16a34a", activeforeground="white",
+            relief="flat", padx=40, pady=28, borderwidth=0,
+            cursor="hand2",
+            command=self._cancel,
+        )
+        self.btn_stop.pack(fill="x", pady=(0, 10))
+
+        self.lbl_hint = tk.Label(
+            body,
+            text="Pulsa el botón verde para cancelar el apagado",
+            font=("Sans Serif", fs(11), "italic"),
+            fg=COLOR_MUTED, bg=COLOR_PANEL)
+        self.lbl_hint.pack()
+
+        # Botón secundario (apagar ya)
+        self.btn_now = tk.Button(
+            body,
+            text="⏻   Apagar YA",
+            font=("Sans Serif", fs(11)),
+            bg="#475569", fg="white",
+            activebackground="#334155", activeforeground="white",
+            relief="flat", padx=20, pady=8, borderwidth=0,
+            cursor="hand2",
+            command=self._confirm_now)
+        self.btn_now.pack(pady=(20, 0))
+
+        # Registrar en ZoomManager
+        if zoom_mgr:
+            zoom_mgr.register_widget(self.lbl_head, "Sans Serif", 22, "bold")
+            zoom_mgr.register_widget(self.lbl_info, "Sans Serif", 14, "normal")
+            zoom_mgr.register_widget(self.lbl_count, "Sans Serif", 72, "bold")
+            zoom_mgr.register_widget(self.lbl_secs, "Sans Serif", 14, "normal")
+            zoom_mgr.register_widget(self.btn_stop, "Sans Serif", 26, "bold")
+            zoom_mgr.register_widget(self.lbl_hint, "Sans Serif", 11, "italic")
+            zoom_mgr.register_widget(self.btn_now, "Sans Serif", 11, "normal")
 
         self.win.bind("<Escape>", lambda e: self._cancel())
         self.win.bind("<Return>", lambda e: self._cancel())
+        self.win.bind("<space>", lambda e: self._cancel())
         self._tick()
 
     def _tick(self):
@@ -1202,6 +1146,397 @@ class ShutdownCountdownDialog:
             self.win.destroy()
         except Exception:
             pass
+
+
+# =========================================================
+# VENTANA DE INFORMACIÓN (PANTALLA COMPLETA, DASHBOARD)
+# =========================================================
+class InfoWindow:
+
+    def __init__(self, parent, zoom_mgr=None):
+        self.zoom_mgr = zoom_mgr
+        self.win = tk.Toplevel(parent)
+        self.win.title(f"{APP_NAME} - Informe completo")
+        self.win.configure(bg=COLOR_BG)
+
+        # Pantalla completa
+        try:
+            self.win.attributes("-fullscreen", True)
+        except Exception:
+            self.win.geometry("1400x900")
+
+        self.win.bind("<Escape>", lambda e: self.win.destroy())
+
+        # ---- Header ----
+        header = tk.Frame(self.win, bg=COLOR_BG, padx=24, pady=16)
+        header.pack(fill="x")
+
+        self.lbl_title = tk.Label(header, text="📊  Informe completo de la batería",
+                                  font=("Sans Serif", 22, "bold"),
+                                  bg=COLOR_BG, fg=COLOR_TEXT)
+        self.lbl_title.pack(side="left")
+
+        # Botones zoom
+        zbtns = tk.Frame(header, bg=COLOR_BG)
+        zbtns.pack(side="right")
+        self.lbl_zoom = tk.Label(zbtns, text=f"{zoom_mgr.percent() if zoom_mgr else 100}%",
+                                 font=("Sans Serif", 12, "bold"),
+                                 bg=COLOR_BG, fg=COLOR_TEXT)
+        self.lbl_zoom.pack(side="right", padx=10)
+
+        def _mk(text, cmd):
+            return tk.Button(zbtns, text=text, font=("Sans Serif", 12, "bold"),
+                             bg=COLOR_PANEL, fg=COLOR_TEXT,
+                             activebackground=COLOR_BORDER,
+                             activeforeground=COLOR_TEXT,
+                             relief="flat", padx=14, pady=6, cursor="hand2",
+                             command=cmd)
+
+        _mk("A+", self._zoom_in).pack(side="right", padx=3)
+        _mk("A−", self._zoom_out).pack(side="right", padx=3)
+        _mk("↺", self._zoom_reset).pack(side="right", padx=3)
+
+        # Botón cerrar
+        tk.Button(header, text="✕  Cerrar  (Esc)",
+                  font=("Sans Serif", 12, "bold"),
+                  bg=COLOR_DANGER, fg="white",
+                  activebackground="#b91c1c", activeforeground="white",
+                  relief="flat", padx=18, pady=8, cursor="hand2",
+                  command=self.win.destroy).pack(side="right", padx=(0, 20))
+
+        # Separador
+        tk.Frame(self.win, bg=COLOR_BORDER, height=1).pack(fill="x")
+
+        # ---- Contenedor principal: 3 columnas ----
+        cols = tk.Frame(self.win, bg=COLOR_BG, padx=20, pady=16)
+        cols.pack(fill="both", expand=True)
+        cols.columnconfigure(0, weight=1, uniform="col")
+        cols.columnconfigure(1, weight=1, uniform="col")
+        cols.columnconfigure(2, weight=1, uniform="col")
+        cols.rowconfigure(0, weight=1)
+
+        # Guardar referencias a los labels que vamos a actualizar
+        self.labels = {}
+
+        # ============ COLUMNA 1 ============
+        col1 = tk.Frame(cols, bg=COLOR_BG)
+        col1.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+
+        self._make_card(col1, "🔋 Estado actual", [
+            ("level_big", "—", "big"),
+            ("state", "—", "normal"),
+            ("energy", "—", "normal"),
+            ("rate", "—", "normal"),
+            ("voltage", "—", "normal"),
+            ("temperature", "—", "normal"),
+            ("time_left", "—", "normal"),
+            ("time_full", "—", "normal"),
+        ])
+
+        self._make_card(col1, "🧠 Salud de la batería", [
+            ("energy_full", "—", "normal"),
+            ("energy_full_design", "—", "normal"),
+            ("capacity", "—", "normal"),
+            ("capacity_diag", "—", "normal"),
+            ("cycles", "—", "normal"),
+        ])
+
+        # ============ COLUMNA 2 ============
+        col2 = tk.Frame(cols, bg=COLOR_BG)
+        col2.grid(row=0, column=1, sticky="nsew", padx=10)
+
+        self._make_card(col2, "⏱ Inactividad y multimedia", [
+            ("idle_time", "—", "normal"),
+            ("media_playing", "—", "normal"),
+            ("media_process", "—", "normal"),
+            ("media_window", "—", "normal"),
+            ("browser_in_use", "—", "normal"),
+            ("browser_reason", "—", "normal"),
+            ("browser_class", "—", "normal"),
+        ])
+
+        self._make_card(col2, "⏻ Auto-apagado", [
+            ("sudoers", "—", "normal"),
+            ("shutdown_enabled", "—", "normal"),
+            ("shutdown_minutes", "—", "normal"),
+            ("browser_mode", "—", "normal"),
+        ])
+
+        # ============ COLUMNA 3 ============
+        col3 = tk.Frame(cols, bg=COLOR_BG)
+        col3.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
+
+        self._make_card(col3, "⚙️ Configuración actual", [
+            ("cfg_max", "—", "normal"),
+            ("cfg_min", "—", "normal"),
+            ("cfg_sound", "—", "normal"),
+            ("cfg_fullscreen", "—", "normal"),
+            ("cfg_zoom", "—", "normal"),
+        ])
+
+        self._make_card(col3, "🖥 Dispositivo", [
+            ("device", "—", "normal"),
+            ("app_version", f"{APP_NAME} v{APP_VERSION}", "normal"),
+        ])
+
+        # Footer con botón actualizar
+        footer = tk.Frame(self.win, bg=COLOR_BG, padx=20, pady=12)
+        footer.pack(fill="x")
+        tk.Button(footer, text="🔄  Actualizar datos",
+                  font=("Sans Serif", 12, "bold"),
+                  bg=COLOR_PRIMARY, fg="white",
+                  activebackground="#2563eb", activeforeground="white",
+                  relief="flat", padx=20, pady=10, cursor="hand2",
+                  command=self.refresh).pack(side="right")
+
+        # Registrar el zoom para todos los labels
+        if zoom_mgr:
+            # Label de título y zoom
+            zoom_mgr.register_widget(self.lbl_title, "Sans Serif", 22, "bold")
+            zoom_mgr.register_widget(self.lbl_zoom, "Sans Serif", 12, "bold")
+            zoom_mgr.add_listener(self._on_zoom_changed)
+
+        self.refresh()
+
+    def _make_card(self, parent, title, rows):
+        """Crea una tarjeta con título y filas etiqueta/valor."""
+        card = tk.Frame(parent, bg=COLOR_PANEL, highlightthickness=1,
+                        highlightbackground=COLOR_BORDER)
+        card.pack(fill="x", pady=(0, 14))
+
+        # Título de la tarjeta
+        title_lbl = tk.Label(card, text=title, font=("Sans Serif", 14, "bold"),
+                             bg=COLOR_PANEL, fg=COLOR_PRIMARY, anchor="w",
+                             padx=14, pady=10)
+        title_lbl.pack(fill="x")
+
+        # Separador
+        tk.Frame(card, bg=COLOR_BORDER, height=1).pack(fill="x")
+
+        # Filas
+        grid = tk.Frame(card, bg=COLOR_PANEL, padx=14, pady=10)
+        grid.pack(fill="x")
+        grid.columnconfigure(0, weight=0)
+        grid.columnconfigure(1, weight=1)
+
+        for i, (key, _val, kind) in enumerate(rows):
+            # Etiqueta
+            label_widget = tk.Label(
+                grid,
+                text=self._pretty_label(key),
+                font=("Sans Serif", 10, "normal"),
+                bg=COLOR_PANEL, fg=COLOR_MUTED, anchor="w")
+            label_widget.grid(row=i, column=0, sticky="w", padx=(0, 10), pady=4)
+
+            # Valor
+            if kind == "big":
+                val_lbl = tk.Label(grid, text="—",
+                                   font=("Sans Serif", 32, "bold"),
+                                   bg=COLOR_PANEL, fg=COLOR_TEXT, anchor="w")
+            else:
+                val_lbl = tk.Label(grid, text="—",
+                                   font=("Sans Serif", 11, "normal"),
+                                   bg=COLOR_PANEL, fg=COLOR_TEXT, anchor="w",
+                                   justify="left", wraplength=380)
+            val_lbl.grid(row=i, column=1, sticky="w", pady=4)
+
+            self.labels[key] = val_lbl
+
+            # Registrar en ZoomManager
+            if self.zoom_mgr:
+                if kind == "big":
+                    self.zoom_mgr.register_widget(val_lbl, "Sans Serif", 32, "bold")
+                else:
+                    self.zoom_mgr.register_widget(val_lbl, "Sans Serif", 11, "normal")
+                self.zoom_mgr.register_widget(label_widget, "Sans Serif", 10, "normal")
+
+        # Registrar título
+        if self.zoom_mgr:
+            self.zoom_mgr.register_widget(title_lbl, "Sans Serif", 14, "bold")
+
+    @staticmethod
+    def _pretty_label(key: str) -> str:
+        mapping = {
+            "level_big": "Nivel",
+            "state": "Estado",
+            "energy": "Energía actual",
+            "rate": "Potencia",
+            "voltage": "Voltaje",
+            "temperature": "Temperatura",
+            "time_left": "Tiempo restante",
+            "time_full": "Tiempo a completa",
+            "energy_full": "energy-full",
+            "energy_full_design": "energy-full-design",
+            "capacity": "capacity (salud)",
+            "capacity_diag": "Diagnóstico",
+            "cycles": "charge-cycles",
+            "idle_time": "Tiempo inactivo",
+            "media_playing": "Multimedia activa",
+            "media_process": "Reproductor activo",
+            "media_window": "Ventana reproductor",
+            "browser_in_use": "Navegador en uso",
+            "browser_reason": "Motivo",
+            "browser_class": "Ventana activa",
+            "sudoers": "Sudoers",
+            "shutdown_enabled": "Auto-apagado",
+            "shutdown_minutes": "Apagar tras",
+            "browser_mode": "Modo navegador",
+            "cfg_max": "Máximo carga",
+            "cfg_min": "Mínimo carga",
+            "cfg_sound": "Pitido",
+            "cfg_fullscreen": "Alerta fullscreen",
+            "cfg_zoom": "Zoom",
+            "device": "Dispositivo",
+            "app_version": "Versión",
+        }
+        return mapping.get(key, key)
+
+    def _on_zoom_changed(self):
+        if not self.win.winfo_exists():
+            return
+        try:
+            if self.zoom_mgr:
+                self.lbl_zoom.config(text=f"{self.zoom_mgr.percent()}%")
+        except tk.TclError:
+            pass
+
+    def _zoom_in(self):
+        if self.zoom_mgr:
+            self.zoom_mgr.zoom_in()
+            self._on_zoom_changed()
+
+    def _zoom_out(self):
+        if self.zoom_mgr:
+            self.zoom_mgr.zoom_out()
+            self._on_zoom_changed()
+
+    def _zoom_reset(self):
+        if self.zoom_mgr:
+            self.zoom_mgr.zoom_reset()
+            self._on_zoom_changed()
+
+    def refresh(self):
+        info = get_battery_full_info()
+        idle = get_idle_seconds()
+        media = is_multimedia_playing()
+        sudoers_ok = check_sudoers_configured()
+        browser = get_browser_status()
+
+        # Función auxiliar
+        def fnum(v, unidad="", dec=2):
+            if v is None:
+                return "No disponible"
+            return f"{v:.{dec}f} {unidad}".strip()
+
+        def fbool(v):
+            return "✅ SÍ" if v else "❌ No"
+
+        # Actualizar labels
+        estado_map = {
+            "charging": "🔌 Cargando",
+            "discharging": "🔋 Descargando",
+            "fully-charged": "✅ Completamente cargada",
+            "pending-charge": "⏳ Pendiente de carga",
+            "pending-discharge": "⏳ Pendiente de descarga",
+            "unknown": "❓ Desconocido",
+        }
+
+        try:
+            # Nivel grande con color
+            pct = info["percentage"]
+            if pct is None:
+                self.labels["level_big"].config(text="—", fg=COLOR_TEXT)
+            else:
+                if pct <= 20:
+                    color = COLOR_DANGER
+                elif pct <= 40:
+                    color = COLOR_WARN
+                else:
+                    color = COLOR_SUCCESS
+                self.labels["level_big"].config(text=f"{pct}%", fg=color)
+
+            self.labels["state"].config(
+                text=estado_map.get(info["state"], info["state"] or "—"))
+            self.labels["energy"].config(text=fnum(info["energy"], "Wh"))
+            self.labels["rate"].config(text=fnum(info["energy_rate"], "W"))
+            self.labels["voltage"].config(text=fnum(info["voltage"], "V"))
+            self.labels["temperature"].config(text=fnum(info["temperature"], "°C", 1))
+            self.labels["time_left"].config(text=info["time_to_empty"] or "—")
+            self.labels["time_full"].config(text=info["time_to_full"] or "—")
+
+            self.labels["energy_full"].config(text=fnum(info["energy_full"], "Wh"))
+            self.labels["energy_full_design"].config(
+                text=fnum(info["energy_full_design"], "Wh"))
+            self.labels["capacity"].config(text=fnum(info["capacity"], "%"))
+            cap = info.get("capacity")
+            if cap is None:
+                diag = "—"
+                color = COLOR_MUTED
+            elif cap >= 90:
+                diag, color = "🟢 Excelente", COLOR_SUCCESS
+            elif cap >= 80:
+                diag, color = "🟡 Buena", COLOR_SUCCESS
+            elif cap >= 60:
+                diag, color = "🟠 Aceptable", COLOR_WARN
+            elif cap >= 40:
+                diag, color = "🔴 Degradada", COLOR_DANGER
+            else:
+                diag, color = "⛔ Muy degradada", COLOR_DANGER
+            self.labels["capacity_diag"].config(text=diag, fg=color)
+
+            self.labels["cycles"].config(
+                text=str(info["charge_cycles"]) if info["charge_cycles"] is not None
+                else "No reportado")
+
+            if idle < 0:
+                self.labels["idle_time"].config(text="No disponible")
+            else:
+                self.labels["idle_time"].config(
+                    text=f"{int(idle // 60)} min {int(idle % 60)} s")
+
+            self.labels["media_playing"].config(
+                text=fbool(media),
+                fg=COLOR_SUCCESS if media else COLOR_MUTED)
+            self.labels["media_process"].config(
+                text=fbool(is_media_player_running()),
+                fg=COLOR_SUCCESS if is_media_player_running() else COLOR_MUTED)
+            self.labels["media_window"].config(
+                text=fbool(is_media_player_window_visible()),
+                fg=COLOR_SUCCESS if is_media_player_window_visible() else COLOR_MUTED)
+
+            self.labels["browser_in_use"].config(
+                text=fbool(browser.get("in_use")),
+                fg=COLOR_SUCCESS if browser.get("in_use") else COLOR_MUTED)
+            self.labels["browser_reason"].config(
+                text=browser.get("reason", "—") or "—")
+            self.labels["browser_class"].config(
+                text=browser.get("active_class", "—") or "—")
+
+            self.labels["sudoers"].config(
+                text="✅ configurado" if sudoers_ok else "❌ NO configurado",
+                fg=COLOR_SUCCESS if sudoers_ok else COLOR_DANGER)
+            self.labels["shutdown_enabled"].config(
+                text=fbool(self.zoom_mgr is not None and
+                           get_vault_config_value("auto_shutdown_enabled")))
+            shutdown_min = get_vault_config_value("auto_shutdown_minutes") or 10
+            self.labels["shutdown_minutes"].config(text=f"{shutdown_min} min")
+            self.labels["browser_mode"].config(
+                text=str(get_vault_config_value("ignore_browser_mode") or "any"))
+
+            self.labels["cfg_max"].config(
+                text=f"{get_vault_config_value('max_charge') or 80}%")
+            self.labels["cfg_min"].config(
+                text=f"{get_vault_config_value('min_charge') or 20}%")
+            self.labels["cfg_sound"].config(
+                text=fbool(get_vault_config_value("sound_enabled")))
+            self.labels["cfg_fullscreen"].config(
+                text=fbool(get_vault_config_value("fullscreen_alert")))
+            self.labels["cfg_zoom"].config(
+                text=f"{self.zoom_mgr.percent() if self.zoom_mgr else 100}%")
+
+            self.labels["device"].config(text=info["device"] or "No detectado")
+        except Exception as e:
+            log.error(f"Error refrescando info: {e}")
 
 
 # =========================================================
@@ -1247,7 +1582,7 @@ class AutoShutdownManager:
             return
 
         if is_multimedia_playing():
-            log.info("AutoShutdown: multimedia activa (VLC/mpv/audio), no se apaga")
+            log.info("AutoShutdown: multimedia activa, no se apaga")
             return
 
         mode = cfg.get("ignore_browser_mode", "any")
@@ -1397,7 +1732,7 @@ class TrayIcon:
 
 
 # =========================================================
-# APLICACIÓN PRINCIPAL (LAYOUT 3 COLUMNAS)
+# APLICACIÓN PRINCIPAL
 # =========================================================
 class BatteryGuardianApp:
 
@@ -1409,16 +1744,12 @@ class BatteryGuardianApp:
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-
-        # Ancho: usar hasta 1400px o 95% de la pantalla (lo que sea menor)
         target_w = min(1400, int(sw * 0.95))
-        target_w = max(1000, target_w)  # mínimo 1000px
-        # Alto: usar hasta 780px o 85% de la pantalla
-        target_h = min(780, int(sh * 0.85))
-        target_h = max(600, target_h)
-
+        target_w = max(1000, target_w)
+        target_h = min(800, int(sh * 0.9))
+        target_h = max(620, target_h)
         self.root.geometry(f"{target_w}x{target_h}")
-        self.root.minsize(1000, 600)
+        self.root.minsize(1000, 620)
         self.root.resizable(True, True)
 
         self.config = load_config()
@@ -1429,12 +1760,12 @@ class BatteryGuardianApp:
         self._force_quit = False
         self._start_hidden = start_hidden
         self._snooze_until = {"connect": 0, "disconnect": 0}
+        self._toggle_buttons = []  # referencia a los toggle buttons
 
-        self.zoom_mgr = ZoomManager(root, self.config.get("zoom", 1.0))
-        apply_modern_styles(root)
+        style = apply_modern_styles(root)
+        self.zoom_mgr = ZoomManager(root, style, self.config.get("zoom", 1.0))
 
         self._build_ui()
-        self.zoom_mgr.add_listener(self._refresh_custom_fonts)
         self.zoom_mgr.apply()
 
         self._setup_tray()
@@ -1450,7 +1781,6 @@ class BatteryGuardianApp:
         if start_hidden:
             self.root.after(500, self.hide_window)
 
-    # ----- Infra -----
     def _setup_tray(self):
         self.tray = TrayIcon(self)
         self.tray.start()
@@ -1475,49 +1805,68 @@ class BatteryGuardianApp:
                     "  sudo chmod 0440 /etc/sudoers.d/battery-guardian"))
 
     # =====================================================
-    # CONSTRUCCIÓN DE LA UI - LAYOUT 3 COLUMNAS
+    # UI principal
     # =====================================================
     def _build_ui(self):
         root = self.root
         root.configure(bg=COLOR_BG)
 
-        # ---- HEADER (fila superior, full width) ----
-        header = ttk.Frame(root, padding=(18, 12, 18, 4))
+        # ---- HEADER ----
+        header = tk.Frame(root, bg=COLOR_BG, padx=18, pady=12)
         header.pack(fill="x")
 
-        self.lbl_app = ttk.Label(header, text=f"🔋  {APP_NAME}",
-                                 style="Title.TLabel")
+        self.lbl_app = tk.Label(header, text=f"🔋  {APP_NAME}",
+                                font=("Sans Serif", 18, "bold"),
+                                bg=COLOR_BG, fg=COLOR_TEXT)
         self.lbl_app.pack(side="left")
+        self.zoom_mgr.register_widget(self.lbl_app, "Sans Serif", 18, "bold")
 
-        self.lbl_sub = ttk.Label(
+        self.lbl_sub = tk.Label(
             header,
             text=f"v{APP_VERSION}  ·  Cuida la salud de tu batería",
-            style="Subtitle.TLabel")
-        self.lbl_sub.pack(side="left", padx=(14, 0), pady=(6, 0))
+            font=("Sans Serif", 9, "italic"),
+            bg=COLOR_BG, fg=COLOR_MUTED)
+        self.lbl_sub.pack(side="left", padx=(14, 0), pady=(8, 0))
+        self.zoom_mgr.register_widget(self.lbl_sub, "Sans Serif", 9, "italic")
 
-        # Controles de zoom (derecha)
-        zbtns = ttk.Frame(header)
+        # Botones de zoom en el header
+        zbtns = tk.Frame(header, bg=COLOR_BG)
         zbtns.pack(side="right")
-        ttk.Button(zbtns, text="A+", width=4,
-                   command=self.zoom_in).pack(side="right", padx=1)
-        ttk.Button(zbtns, text="A−", width=4,
-                   command=self.zoom_out).pack(side="right", padx=1)
-        ttk.Button(zbtns, text="↺", width=3,
-                   command=self.zoom_reset).pack(side="right", padx=1)
-        self.lbl_zoom = ttk.Label(zbtns, text=f"{self.zoom_mgr.percent()}%",
-                                  font=("Sans Serif", 11, "bold"))
-        self.lbl_zoom.pack(side="right", padx=6)
 
-        # ---- CONTENEDOR PRINCIPAL: 3 COLUMNAS ----
-        cols = ttk.Frame(root, padding=(18, 6, 18, 6))
+        self.lbl_zoom = tk.Label(zbtns, text=f"{self.zoom_mgr.percent()}%",
+                                 font=("Sans Serif", 11, "bold"),
+                                 bg=COLOR_BG, fg=COLOR_TEXT)
+        self.lbl_zoom.pack(side="right", padx=8)
+        self.zoom_mgr.register_widget(self.lbl_zoom, "Sans Serif", 11, "bold")
+
+        def _mk_zoom_btn(text, cmd):
+            b = tk.Button(zbtns, text=text, font=("Sans Serif", 10, "bold"),
+                          bg=COLOR_PANEL, fg=COLOR_TEXT,
+                          activebackground=COLOR_BORDER,
+                          activeforeground=COLOR_TEXT,
+                          relief="flat", padx=10, pady=4, cursor="hand2",
+                          command=cmd)
+            b.pack(side="right", padx=2)
+            self.zoom_mgr.register_widget(b, "Sans Serif", 10, "bold")
+            return b
+
+        _mk_zoom_btn("A+", self.zoom_in)
+        _mk_zoom_btn("A−", self.zoom_out)
+        _mk_zoom_btn("↺", self.zoom_reset)
+
+        # Separador
+        tk.Frame(root, bg=COLOR_BORDER, height=1).pack(fill="x")
+
+        # ---- 3 COLUMNAS ----
+        cols = tk.Frame(root, bg=COLOR_BG, padx=18, pady=12)
         cols.pack(fill="both", expand=True)
         cols.columnconfigure(0, weight=1, uniform="col")
         cols.columnconfigure(1, weight=1, uniform="col")
         cols.columnconfigure(2, weight=1, uniform="col")
         cols.rowconfigure(0, weight=1)
 
-        # ============ COLUMNA 1: Estado + Límites ============
-        col1 = ttk.Frame(cols)
+        # ============ COLUMNA 1 ============
+        col1 = tk.Frame(cols, bg=COLOR_BG)
         col1.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
         # --- Tarjeta: Estado de la batería ---
@@ -1525,7 +1874,6 @@ class BatteryGuardianApp:
                                      style="Card.TLabelframe")
         card_status.pack(fill="x", pady=(0, 10))
 
-        # Nivel grande y destacado
         lvl_frame = ttk.Frame(card_status, style="Card.TFrame")
         lvl_frame.pack(fill="x", pady=(0, 8))
         self.lbl_level = ttk.Label(lvl_frame, text="—", style="BigVal.TLabel")
@@ -1546,7 +1894,7 @@ class BatteryGuardianApp:
                                     style="Info.TLabel")
         self.lbl_cycles.pack(anchor="w", pady=1)
 
-        # --- Tarjeta: Límites de carga ---
+        # --- Tarjeta: Límites ---
         card_lim = ttk.LabelFrame(col1, text="  ⚙️ Límites de carga  ",
                                   style="Card.TLabelframe")
         card_lim.pack(fill="x", pady=(0, 10))
@@ -1573,31 +1921,49 @@ class BatteryGuardianApp:
         sp_min.bind("<FocusOut>", lambda e: self._save())
         sp_min.bind("<Return>", lambda e: self._save())
 
-        # --- Tarjeta: Control de monitoreo ---
+        # --- Tarjeta: Control de monitoreo con TOGGLE BUTTONS ---
         card_ctrl = ttk.LabelFrame(col1, text="  🎛️ Control de monitoreo  ",
                                    style="Card.TLabelframe")
         card_ctrl.pack(fill="x")
 
         self.enabled_var = tk.BooleanVar(value=self.config["enabled"])
-        ttk.Checkbutton(card_ctrl, text="Activar monitoreo de batería",
-                        variable=self.enabled_var,
-                        style="Card.TCheckbutton",
-                        command=self._on_toggle_check).pack(anchor="w", pady=2)
+        self.tb_enabled = ToggleButton(
+            card_ctrl,
+            text="Monitoreo de batería",
+            variable=self.enabled_var,
+            command=self._on_toggle_check,
+            zoom_mgr=self.zoom_mgr,
+            width=32,
+        )
+        self.tb_enabled.pack(fill="x", pady=3)
+        self._toggle_buttons.append(self.tb_enabled)
 
         self.sound_var = tk.BooleanVar(value=self.config["sound_enabled"])
-        ttk.Checkbutton(card_ctrl, text="Activar pitido de alerta",
-                        variable=self.sound_var,
-                        style="Card.TCheckbutton",
-                        command=self._save).pack(anchor="w", pady=2)
+        self.tb_sound = ToggleButton(
+            card_ctrl,
+            text="Pitido de alerta",
+            variable=self.sound_var,
+            command=self._save,
+            zoom_mgr=self.zoom_mgr,
+            width=32,
+        )
+        self.tb_sound.pack(fill="x", pady=3)
+        self._toggle_buttons.append(self.tb_sound)
 
         self.fullscreen_var = tk.BooleanVar(value=self.config["fullscreen_alert"])
-        ttk.Checkbutton(card_ctrl, text="Alerta a pantalla completa",
-                        variable=self.fullscreen_var,
-                        style="Card.TCheckbutton",
-                        command=self._save).pack(anchor="w", pady=2)
+        self.tb_fullscreen = ToggleButton(
+            card_ctrl,
+            text="Alerta a pantalla completa",
+            variable=self.fullscreen_var,
+            command=self._save,
+            zoom_mgr=self.zoom_mgr,
+            width=32,
+        )
+        self.tb_fullscreen.pack(fill="x", pady=3)
+        self._toggle_buttons.append(self.tb_fullscreen)
 
-        # ============ COLUMNA 2: Auto-apagado (central) ============
-        col2 = ttk.Frame(cols)
+        # ============ COLUMNA 2 ============
+        col2 = tk.Frame(cols, bg=COLOR_BG)
         col2.grid(row=0, column=1, sticky="nsew", padx=8)
 
         card_sd = ttk.LabelFrame(col2,
@@ -1607,12 +1973,16 @@ class BatteryGuardianApp:
 
         self.shutdown_var = tk.BooleanVar(
             value=self.config["auto_shutdown_enabled"])
-        ttk.Checkbutton(card_sd,
-                        text="Activar auto-apagado cuando el PC esté inactivo",
-                        variable=self.shutdown_var,
-                        style="Card.TCheckbutton",
-                        command=self._on_toggle_shutdown_check
-                        ).pack(anchor="w", pady=(0, 8))
+        self.tb_shutdown = ToggleButton(
+            card_sd,
+            text="Auto-apagado por inactividad",
+            variable=self.shutdown_var,
+            command=self._on_toggle_shutdown_check,
+            zoom_mgr=self.zoom_mgr,
+            width=38,
+        )
+        self.tb_shutdown.pack(fill="x", pady=(0, 8))
+        self._toggle_buttons.append(self.tb_shutdown)
 
         f1 = ttk.Frame(card_sd, style="Card.TFrame")
         f1.pack(fill="x", pady=4)
@@ -1654,7 +2024,8 @@ class BatteryGuardianApp:
 
         ttk.Separator(card_sd, orient="horizontal").pack(fill="x", pady=10)
 
-        ttk.Label(card_sd, text="📡 Estado en vivo", style="Card.TLabel",
+        ttk.Label(card_sd, text="📡 Estado en vivo",
+                  style="Card.TLabel",
                   font=("Sans Serif", 10, "bold")).pack(anchor="w", pady=(0, 4))
 
         self.lbl_idle = ttk.Label(card_sd, text="Inactividad: —",
@@ -1685,8 +2056,8 @@ class BatteryGuardianApp:
                    command=self._test_shutdown_warning).pack(anchor="w",
                                                              pady=(4, 0))
 
-        # ============ COLUMNA 3: Botones + acciones ============
-        col3 = ttk.Frame(cols)
+        # ============ COLUMNA 3 ============
+        col3 = tk.Frame(cols, bg=COLOR_BG)
         col3.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
 
         card_actions = ttk.LabelFrame(col3, text="  ⚡ Acciones rápidas  ",
@@ -1706,7 +2077,6 @@ class BatteryGuardianApp:
                    command=self.hide_window
                    ).pack(fill="x", pady=4)
 
-        # --- Tarjeta: Atajos de teclado ---
         card_help = ttk.LabelFrame(col3, text="  ⌨️ Atajos y zoom  ",
                                    style="Card.TLabelframe")
         card_help.pack(fill="x", pady=(0, 10))
@@ -1718,7 +2088,6 @@ class BatteryGuardianApp:
                   style="Muted.TLabel", justify="left"
                   ).pack(anchor="w", pady=2)
 
-        # --- Tarjeta: Información del sistema ---
         card_sys = ttk.LabelFrame(col3, text="  ℹ️ Acerca de  ",
                                   style="Card.TLabelframe")
         card_sys.pack(fill="both", expand=True)
@@ -1734,25 +2103,35 @@ class BatteryGuardianApp:
                   style="Muted.TLabel", justify="left"
                   ).pack(anchor="w", pady=2)
 
-        # ---- FOOTER: barra inferior ----
-        footer = ttk.Frame(root, padding=(18, 4, 18, 12))
+        # ---- FOOTER ----
+        footer = tk.Frame(root, bg=COLOR_BG, padx=18, pady=8)
         footer.pack(fill="x")
 
-        ttk.Label(footer,
-                  text="💡 La ventana se adapta al tamaño de tu pantalla. "
-                       "Pulsa X para ocultar en la bandeja.",
-                  style="Subtitle.TLabel").pack(side="left")
+        self.lbl_footer = tk.Label(
+            footer,
+            text="💡 La ventana se adapta al tamaño de tu pantalla. "
+                 "Pulsa X para ocultar en la bandeja.",
+            font=("Sans Serif", 9, "italic"),
+            bg=COLOR_BG, fg=COLOR_MUTED)
+        self.lbl_footer.pack(side="left")
+        self.zoom_mgr.register_widget(self.lbl_footer, "Sans Serif", 9, "italic")
 
-        ttk.Button(footer, text="Salir del programa",
-                   command=self.ask_quit).pack(side="right")
+        tk.Button(footer, text="Salir del programa",
+                  font=("Sans Serif", 10),
+                  bg=COLOR_PANEL, fg=COLOR_TEXT,
+                  activebackground=COLOR_BORDER,
+                  activeforeground=COLOR_TEXT,
+                  relief="flat", padx=14, pady=6, cursor="hand2",
+                  command=self.ask_quit).pack(side="right")
+
+        # Aviso de zoom (label que se actualiza)
+        self.zoom_mgr.add_listener(self._update_zoom_label)
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_x)
 
-    def _refresh_custom_fonts(self):
+    def _update_zoom_label(self):
         try:
-            self.lbl_app.config(font=("Sans Serif", self.zoom_mgr.scaled(18), "bold"))
-            self.lbl_sub.config(font=("Sans Serif", self.zoom_mgr.scaled(9), "italic"))
-            self.lbl_zoom.config(font=("Sans Serif", self.zoom_mgr.scaled(11), "bold"))
+            self.lbl_zoom.config(text=f"{self.zoom_mgr.percent()}%")
         except tk.TclError:
             pass
 
@@ -1774,12 +2153,16 @@ class BatteryGuardianApp:
     def toggle_enabled(self):
         self.config["enabled"] = not self.config["enabled"]
         self.enabled_var.set(self.config["enabled"])
+        for tb in self._toggle_buttons:
+            tb.refresh()
         save_config(self.config)
 
     def toggle_auto_shutdown(self):
         self.config["auto_shutdown_enabled"] = \
             not self.config.get("auto_shutdown_enabled", False)
         self.shutdown_var.set(self.config["auto_shutdown_enabled"])
+        for tb in self._toggle_buttons:
+            tb.refresh()
         save_config(self.config)
         if self.config["auto_shutdown_enabled"]:
             self.auto_shutdown.start()
@@ -1825,9 +2208,17 @@ class BatteryGuardianApp:
             pass
 
     # ----- Zoom -----
-    def zoom_in(self): self.zoom_mgr.zoom_in(); self._persist_zoom()
-    def zoom_out(self): self.zoom_mgr.zoom_out(); self._persist_zoom()
-    def zoom_reset(self): self.zoom_mgr.zoom_reset(); self._persist_zoom()
+    def zoom_in(self):
+        self.zoom_mgr.zoom_in()
+        self._persist_zoom()
+
+    def zoom_out(self):
+        self.zoom_mgr.zoom_out()
+        self._persist_zoom()
+
+    def zoom_reset(self):
+        self.zoom_mgr.zoom_reset()
+        self._persist_zoom()
 
     def _persist_zoom(self):
         self.config["zoom"] = self.zoom_mgr.zoom
@@ -1928,7 +2319,6 @@ class BatteryGuardianApp:
             self.lbl_capacity.config(text="capacity (salud): —")
             self.lbl_cycles.config(text="charge-cycles: —")
         else:
-            # Nivel grande con color
             if level <= 20:
                 style_lvl = "BigDanger.TLabel"
             elif level <= 40:
