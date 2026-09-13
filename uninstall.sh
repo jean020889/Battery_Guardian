@@ -1,7 +1,8 @@
 
+
 #!/bin/bash
 # =========================================================
-#  Battery Guardian - Desinstalador v2.2.4
+#  Battery Guardian - Desinstalador v2.2.9
 # =========================================================
 #  Elimina TODO lo que install.sh instaló, incluyendo:
 #      - Servicio systemd --user
@@ -42,7 +43,7 @@ print_info() { echo -e "   [i] $1"; }
 
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  🔋 Desinstalando $APP_NAME v2.2.4${NC}"
+echo -e "${BOLD}  🔋 Desinstalando $APP_NAME v2.2.9${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo ""
 
@@ -149,9 +150,8 @@ else
     echo "   (no existía)"
 fi
 
-# Si ~/Apps quedó vacía, la eliminamos también
 if [ -d "$HOME/Apps" ] && [ -z "$(ls -A "$HOME/Apps" 2>/dev/null)" ]; then
-    rmdir "$HOME/Apps" 2>/dev/null && print_ok "$HOME/Apps (estaba vacía) eliminada"
+    rmdir "$HOME/Apps" 2>/dev/null && print_ok "$HOME/Apps (vacía) eliminada"
 fi
 echo ""
 
