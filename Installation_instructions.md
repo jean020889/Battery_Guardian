@@ -84,7 +84,7 @@ text
   📌 El programa ya está corriendo en segundo plano.
      Búscalo en la bandeja del sistema (donde WiFi/Bluetooth).
 
-###Desinstalación:
+### Desinstalación:
 
 ```bash
 chmod +x uninstall.sh uninstall.sh
