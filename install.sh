@@ -1,7 +1,7 @@
 
 #!/bin/bash
 # =========================================================
-#  Battery Guardian - Instalador v2.2.6
+#  Battery Guardian - Instalador v2.2.9
 # =========================================================
 #  Instala el programa en un entorno virtual (venv) en:
 #      ~/Apps/Battery_Guardian/
@@ -13,11 +13,14 @@
 #      - Configuración de sudoers para auto-apagado sin contraseña
 #
 #  COPIA ADEMÁS:
-#      - install.sh, uninstall.sh (para poder reinstalar/desinstalar
-#        desde la carpeta instalada)
+#      - install.sh, uninstall.sh (para reinstalar desde la carpeta)
 #      - LICENSE / LICENSE.md / LICENCE / LICENCE.md
 #      - README.md, Installation_instructions.md, requirements.txt
-#        y .gitignore (si existen)
+#      - .gitignore
+#
+#  DETECTA dependencias faltantes y pide permiso para instalarlas:
+#      - python3, python3-venv, python3-tk, upower  (OBLIGATORIAS)
+#      - xprintidle, xdotool, x11-utils            (RECOMENDADAS)
 # =========================================================
 set -e
 
@@ -56,7 +59,7 @@ print_info() { echo -e "   [i] $1"; }
 
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  🔋 Instalando $APP_NAME v2.2.6${NC}"
+echo -e "${BOLD}  🔋 Instalando $APP_NAME v2.2.9${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo -e "  Origen:  $PROJECT_DIR"
 echo -e "  Destino: $INSTALL_DIR"
@@ -109,7 +112,7 @@ else
 fi
 
 if command -v xdotool &>/dev/null; then
-    print_ok "xdotool (detección de ventanas / reproductores)"
+    print_ok "xdotool (detección de ventanas/reproductores)"
 else
     print_warn "xdotool → NO INSTALADO (necesario para detectar VLC/navegador)"
     MISSING_RECOMMENDED+=("xdotool")
@@ -206,7 +209,7 @@ if [ ${#ALL_MISSING[@]} -gt 0 ]; then
                 || print_warn "No se pudieron instalar"
             echo ""
         else
-            print_warn "Continuando sin ellas (auto-apagado y detecciones limitadas)"
+            print_warn "Continuando sin ellas (detecciones limitadas)"
             echo ""
         fi
     fi
@@ -234,7 +237,6 @@ if [ ! -f "$PROJECT_DIR/battery_guardian.py" ]; then
 fi
 print_ok "Programa: battery_guardian.py"
 
-# Detectar licencia (cualquier variante)
 LICENSE_SRC=""
 for candidate in LICENSE.md LICENSE LICENCE.md LICENCE license.md license; do
     if [ -f "$PROJECT_DIR/$candidate" ]; then
@@ -275,20 +277,17 @@ echo ""
 
 
 # =========================================================
-#  7) Copiar archivos (INCLUYE install/uninstall/license)
+#  7) Copiar archivos
 # =========================================================
 echo -e "${BLUE}${BOLD}▶ [7/14] Copiando archivos...${NC}"
 
-# --- Programa principal ---
 cp -f "$PROJECT_DIR/battery_guardian.py" "$APP_FILE"
 chmod +x "$APP_FILE"
 print_ok "battery_guardian.py"
 
-# --- Icono ---
 cp -f "$ICON_SRC" "$ICON_DST"
 print_ok "battery_guardian_icon.png"
 
-# --- install.sh / uninstall.sh (NUEVO v2.2.6) ---
 if [ -f "$PROJECT_DIR/install.sh" ]; then
     cp -f "$PROJECT_DIR/install.sh" "$INSTALL_DIR/install.sh"
     chmod +x "$INSTALL_DIR/install.sh"
@@ -301,13 +300,11 @@ if [ -f "$PROJECT_DIR/uninstall.sh" ]; then
     print_ok "uninstall.sh"
 fi
 
-# --- Licencia (cualquier variante) ---
 if [ -n "$LICENSE_SRC" ]; then
     cp -f "$LICENSE_SRC" "$INSTALL_DIR/$(basename "$LICENSE_SRC")"
     print_ok "$(basename "$LICENSE_SRC")"
 fi
 
-# --- Documentación y dependencias ---
 [ -f "$PROJECT_DIR/requirements.txt" ] && cp -f "$PROJECT_DIR/requirements.txt" "$INSTALL_DIR/" && print_ok "requirements.txt"
 [ -f "$PROJECT_DIR/README.md" ]        && cp -f "$PROJECT_DIR/README.md"        "$INSTALL_DIR/" && print_ok "README.md"
 [ -f "$PROJECT_DIR/Installation_instructions.md" ] && \
@@ -390,7 +387,7 @@ echo ""
 
 
 # =========================================================
-#  12) Servicio systemd con retardo
+#  12) Servicio systemd
 # =========================================================
 echo -e "${BLUE}${BOLD}▶ [12/14] Instalando servicio systemd --user...${NC}"
 [ -f "$AUTOSTART_FILE" ] && rm -f "$AUTOSTART_FILE"
@@ -424,7 +421,7 @@ echo ""
 
 
 # =========================================================
-#  13) CONFIGURAR SUDOERS
+#  13) Configurar sudoers
 # =========================================================
 echo -e "${BLUE}${BOLD}▶ [13/14] Configurando sudoers para auto-apagado...${NC}"
 echo ""
@@ -438,11 +435,11 @@ print_info "poweroff: $REAL_POWEROFF"
 print_info "systemctl: $REAL_SYSTEMCTL"
 echo ""
 
-SUDOERS_CONTENT="$CURRENT_USER ALL=(ALL) NOPASSWD: $REAL_POWEROFF, $REAL_SYSTEMCTL poweroff"
+SUDOERS_CONTENT="$CURRENT_USER ALL=(ALL) NOPASSWD: $REAL_SYSTEMCTL poweroff, $REAL_POWEROFF, $REAL_POWEROFF --force --force"
 
 read -r -p "  ¿Configurar sudoers para permitir auto-apagado sin contraseña? [S/n]: " RESP_SUDO
 if [[ "$RESP_SUDO" =~ ^[nN]$ ]]; then
-    print_warn "Omitido. El auto-apagado NO funcionará sin esto."
+    print_warn "Omitido. El auto-apagado podría no funcionar sin esto."
     echo ""
 else
     TMP_SUDOERS="$(mktemp)"
@@ -458,10 +455,13 @@ else
         rm -f "$TMP_SUDOERS"
         print_ok "Creado: $SUDOERS_FILE"
 
-        if sudo -n "$REAL_POWEROFF" --help &>/dev/null; then
-            print_ok "Verificado: sudo -n $REAL_POWEROFF funciona"
+        # Verificar
+        if sudo -n "$REAL_SYSTEMCTL" poweroff --help &>/dev/null; then
+            print_ok "Verificado: sudo -n systemctl poweroff funciona"
+        elif sudo -n "$REAL_POWEROFF" --help &>/dev/null; then
+            print_ok "Verificado: sudo -n poweroff funciona"
         else
-            print_warn "Verificación fallida. Prueba: sudo -n $REAL_POWEROFF --help"
+            print_warn "Verificación fallida. Prueba: sudo -n systemctl poweroff --help"
         fi
     fi
 fi
@@ -514,6 +514,11 @@ echo "      - Icono del escritorio"
 echo "      - Menú → '$APP_NAME'"
 echo "      - Terminal:  $APP_SLUG"
 echo ""
-echo "  🗑️  Desinstalar:  $INSTALL_DIR/uninstall.sh"
-echo "                    (o $PROJECT_DIR/uninstall.sh)"
+echo "  🧪 Diagnóstico:"
+echo "      $APP_SLUG --info         # Ver estado"
+echo "      cd $INSTALL_DIR && ./venv/bin/python battery_guardian.py --debug"
+echo ""
+echo "  🗑️  Desinstalar:"
+echo "      $INSTALL_DIR/uninstall.sh"
+echo "      (o $PROJECT_DIR/uninstall.sh)"
 echo ""
