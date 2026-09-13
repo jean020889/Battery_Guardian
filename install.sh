@@ -1,7 +1,7 @@
 
 #!/bin/bash
 # =========================================================
-#  Battery Guardian - Instalador v2.2.4
+#  Battery Guardian - Instalador v2.2.6
 # =========================================================
 #  Instala el programa en un entorno virtual (venv) en:
 #      ~/Apps/Battery_Guardian/
@@ -12,9 +12,12 @@
 #      - Enlace CLI en ~/.local/bin
 #      - Configuración de sudoers para auto-apagado sin contraseña
 #
-#  DETECTA dependencias faltantes y pide permiso para instalarlas:
-#      - python3, python3-venv, python3-tk, upower  (OBLIGATORIAS)
-#      - xprintidle, xdotool, x11-utils            (RECOMENDADAS)
+#  COPIA ADEMÁS:
+#      - install.sh, uninstall.sh (para poder reinstalar/desinstalar
+#        desde la carpeta instalada)
+#      - LICENSE / LICENSE.md / LICENCE / LICENCE.md
+#      - README.md, Installation_instructions.md, requirements.txt
+#        y .gitignore (si existen)
 # =========================================================
 set -e
 
@@ -37,7 +40,6 @@ SYSTEMD_FILE="$SYSTEMD_USER_DIR/${APP_SLUG}.service"
 
 SUDOERS_FILE="/etc/sudoers.d/battery-guardian"
 POWEROFF_PATH="/usr/sbin/poweroff"
-SYSTEMCTL_PATH="/usr/bin/systemctl"
 
 # Colores
 GREEN="\033[0;32m"
@@ -54,7 +56,7 @@ print_info() { echo -e "   [i] $1"; }
 
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  🔋 Instalando $APP_NAME v2.2.4${NC}"
+echo -e "${BOLD}  🔋 Instalando $APP_NAME v2.2.6${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo -e "  Origen:  $PROJECT_DIR"
 echo -e "  Destino: $INSTALL_DIR"
@@ -67,7 +69,6 @@ echo ""
 echo -e "${BLUE}${BOLD}▶ [1/14] Comprobando dependencias del sistema...${NC}"
 echo ""
 
-# --- OBLIGATORIAS ---
 MISSING_REQUIRED=()
 
 if command -v python3 &>/dev/null; then
@@ -98,10 +99,8 @@ else
     MISSING_REQUIRED+=("upower")
 fi
 
-# --- RECOMENDADAS ---
 MISSING_RECOMMENDED=()
 
-# xprintidle (detección de inactividad)
 if command -v xprintidle &>/dev/null; then
     print_ok "xprintidle (detección de inactividad)"
 else
@@ -109,23 +108,20 @@ else
     MISSING_RECOMMENDED+=("xprintidle")
 fi
 
-# xdotool (detección de navegador en uso) - NUEVO v2.2.4
 if command -v xdotool &>/dev/null; then
-    print_ok "xdotool (detección de ventana activa / navegador)"
+    print_ok "xdotool (detección de ventanas / reproductores)"
 else
-    print_warn "xdotool → NO INSTALADO (necesario para detectar navegador)"
+    print_warn "xdotool → NO INSTALADO (necesario para detectar VLC/navegador)"
     MISSING_RECOMMENDED+=("xdotool")
 fi
 
-# x11-utils (xprop para pantalla completa) - NUEVO v2.2.4
 if command -v xprop &>/dev/null; then
-    print_ok "x11-utils (xprop para detectar pantalla completa)"
+    print_ok "x11-utils (xprop para pantalla completa)"
 else
-    print_warn "x11-utils → NO INSTALADO (necesario para detectar vídeo a pantalla completa)"
+    print_warn "x11-utils → NO INSTALADO"
     MISSING_RECOMMENDED+=("x11-utils")
 fi
 
-# --- Otras opcionales ---
 echo ""
 print_info "Otras dependencias opcionales:"
 
@@ -181,7 +177,6 @@ if [ ${#ALL_MISSING[@]} -gt 0 ]; then
             sudo apt update || true
             print_ok "Repositorios actualizados"
             echo ""
-
             echo -e "${BLUE}${BOLD}▶ [3/14] Instalando dependencias (apt install)...${NC}"
             if sudo apt install -y "${ALL_MISSING[@]}"; then
                 print_ok "Dependencias instaladas"
@@ -211,7 +206,7 @@ if [ ${#ALL_MISSING[@]} -gt 0 ]; then
                 || print_warn "No se pudieron instalar"
             echo ""
         else
-            print_warn "Continuando sin ellas (auto-apagado y detección de navegador no funcionarán)"
+            print_warn "Continuando sin ellas (auto-apagado y detecciones limitadas)"
             echo ""
         fi
     fi
@@ -239,13 +234,17 @@ if [ ! -f "$PROJECT_DIR/battery_guardian.py" ]; then
 fi
 print_ok "Programa: battery_guardian.py"
 
+# Detectar licencia (cualquier variante)
 LICENSE_SRC=""
-if [ -f "$PROJECT_DIR/LICENSE.md" ]; then
-    LICENSE_SRC="$PROJECT_DIR/LICENSE.md"
-    print_ok "Licencia: LICENSE.md"
-elif [ -f "$PROJECT_DIR/LICENSE" ]; then
-    LICENSE_SRC="$PROJECT_DIR/LICENSE"
-    print_ok "Licencia: LICENSE"
+for candidate in LICENSE.md LICENSE LICENCE.md LICENCE license.md license; do
+    if [ -f "$PROJECT_DIR/$candidate" ]; then
+        LICENSE_SRC="$PROJECT_DIR/$candidate"
+        break
+    fi
+done
+
+if [ -n "$LICENSE_SRC" ]; then
+    print_ok "Licencia: $(basename "$LICENSE_SRC")"
 else
     print_warn "Sin licencia (no se copiará)"
 fi
@@ -276,21 +275,45 @@ echo ""
 
 
 # =========================================================
-#  7) Copiar archivos
+#  7) Copiar archivos (INCLUYE install/uninstall/license)
 # =========================================================
 echo -e "${BLUE}${BOLD}▶ [7/14] Copiando archivos...${NC}"
+
+# --- Programa principal ---
 cp -f "$PROJECT_DIR/battery_guardian.py" "$APP_FILE"
 chmod +x "$APP_FILE"
+print_ok "battery_guardian.py"
+
+# --- Icono ---
 cp -f "$ICON_SRC" "$ICON_DST"
+print_ok "battery_guardian_icon.png"
 
-[ -f "$PROJECT_DIR/requirements.txt" ] && cp -f "$PROJECT_DIR/requirements.txt" "$INSTALL_DIR/"
-[ -f "$PROJECT_DIR/README.md" ]        && cp -f "$PROJECT_DIR/README.md"        "$INSTALL_DIR/"
-[ -n "$LICENSE_SRC" ]                  && cp -f "$LICENSE_SRC"                  "$INSTALL_DIR/"
+# --- install.sh / uninstall.sh (NUEVO v2.2.6) ---
+if [ -f "$PROJECT_DIR/install.sh" ]; then
+    cp -f "$PROJECT_DIR/install.sh" "$INSTALL_DIR/install.sh"
+    chmod +x "$INSTALL_DIR/install.sh"
+    print_ok "install.sh"
+fi
+
+if [ -f "$PROJECT_DIR/uninstall.sh" ]; then
+    cp -f "$PROJECT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
+    chmod +x "$INSTALL_DIR/uninstall.sh"
+    print_ok "uninstall.sh"
+fi
+
+# --- Licencia (cualquier variante) ---
+if [ -n "$LICENSE_SRC" ]; then
+    cp -f "$LICENSE_SRC" "$INSTALL_DIR/$(basename "$LICENSE_SRC")"
+    print_ok "$(basename "$LICENSE_SRC")"
+fi
+
+# --- Documentación y dependencias ---
+[ -f "$PROJECT_DIR/requirements.txt" ] && cp -f "$PROJECT_DIR/requirements.txt" "$INSTALL_DIR/" && print_ok "requirements.txt"
+[ -f "$PROJECT_DIR/README.md" ]        && cp -f "$PROJECT_DIR/README.md"        "$INSTALL_DIR/" && print_ok "README.md"
 [ -f "$PROJECT_DIR/Installation_instructions.md" ] && \
-    cp -f "$PROJECT_DIR/Installation_instructions.md" "$INSTALL_DIR/"
-[ -f "$PROJECT_DIR/.gitignore" ]       && cp -f "$PROJECT_DIR/.gitignore"       "$INSTALL_DIR/"
+    cp -f "$PROJECT_DIR/Installation_instructions.md" "$INSTALL_DIR/" && print_ok "Installation_instructions.md"
+[ -f "$PROJECT_DIR/.gitignore" ]       && cp -f "$PROJECT_DIR/.gitignore"       "$INSTALL_DIR/" && print_ok ".gitignore"
 
-print_ok "Archivos copiados"
 echo ""
 
 
@@ -401,12 +424,11 @@ echo ""
 
 
 # =========================================================
-#  13) CONFIGURAR SUDOERS (auto-apagado sin contraseña)
+#  13) CONFIGURAR SUDOERS
 # =========================================================
 echo -e "${BLUE}${BOLD}▶ [13/14] Configurando sudoers para auto-apagado...${NC}"
 echo ""
 
-# Detectar ruta real de poweroff y systemctl
 REAL_POWEROFF="$(which poweroff 2>/dev/null || echo "/usr/sbin/poweroff")"
 REAL_SYSTEMCTL="$(which systemctl 2>/dev/null || echo "/usr/bin/systemctl")"
 CURRENT_USER="$(whoami)"
@@ -416,16 +438,13 @@ print_info "poweroff: $REAL_POWEROFF"
 print_info "systemctl: $REAL_SYSTEMCTL"
 echo ""
 
-# Contenido del archivo sudoers
 SUDOERS_CONTENT="$CURRENT_USER ALL=(ALL) NOPASSWD: $REAL_POWEROFF, $REAL_SYSTEMCTL poweroff"
 
-# Pedir confirmación
 read -r -p "  ¿Configurar sudoers para permitir auto-apagado sin contraseña? [S/n]: " RESP_SUDO
 if [[ "$RESP_SUDO" =~ ^[nN]$ ]]; then
     print_warn "Omitido. El auto-apagado NO funcionará sin esto."
     echo ""
 else
-    # Crear archivo temporal y validar
     TMP_SUDOERS="$(mktemp)"
     echo "$SUDOERS_CONTENT" > "$TMP_SUDOERS"
 
@@ -437,15 +456,12 @@ else
         sudo chmod 0440 "$SUDOERS_FILE"
         sudo chown root:root "$SUDOERS_FILE"
         rm -f "$TMP_SUDOERS"
-
         print_ok "Creado: $SUDOERS_FILE"
 
-        # Verificar que funciona
         if sudo -n "$REAL_POWEROFF" --help &>/dev/null; then
-            print_ok "Verificado: sudo -n $REAL_POWEROFF funciona sin contraseña"
+            print_ok "Verificado: sudo -n $REAL_POWEROFF funciona"
         else
-            print_warn "Advertencia: la verificación falló"
-            print_info "Comprueba manualmente: sudo -n $REAL_POWEROFF --help"
+            print_warn "Verificación fallida. Prueba: sudo -n $REAL_POWEROFF --help"
         fi
     fi
 fi
@@ -464,36 +480,18 @@ echo ""
 if systemctl --user is-active --quiet "${APP_SLUG}.service"; then
     print_ok "Servicio systemd ACTIVO"
 else
-    print_warn "Servicio NO activo (revisa: systemctl --user status ${APP_SLUG}.service)"
+    print_warn "Servicio NO activo"
 fi
 
-if [ -f "$SUDOERS_FILE" ]; then
-    print_ok "Sudoers configurado: $SUDOERS_FILE"
-else
-    print_warn "Sudoers NO configurado (auto-apagado no funcionará)"
-fi
+[ -f "$SUDOERS_FILE" ] && print_ok "Sudoers configurado" \
+                       || print_warn "Sudoers NO configurado"
 
-# Verificar dependencias opcionales finales
-echo ""
-print_info "Estado de dependencias opcionales:"
-
-if command -v xprintidle &>/dev/null; then
-    print_ok "xprintidle → detección de inactividad OK"
-else
-    print_warn "xprintidle NO instalado (detección de inactividad limitada)"
-fi
-
-if command -v xdotool &>/dev/null; then
-    print_ok "xdotool → detección de navegador OK"
-else
-    print_warn "xdotool NO instalado (NO detectará navegador en uso)"
-fi
-
-if command -v xprop &>/dev/null; then
-    print_ok "xprop → detección de pantalla completa OK"
-else
-    print_warn "xprop NO instalado (NO detectará vídeo a pantalla completa)"
-fi
+command -v xprintidle &>/dev/null && print_ok "xprintidle OK" \
+                                   || print_warn "xprintidle NO instalado"
+command -v xdotool &>/dev/null    && print_ok "xdotool OK" \
+                                   || print_warn "xdotool NO instalado"
+command -v xprop &>/dev/null      && print_ok "xprop OK" \
+                                   || print_warn "xprop NO instalado"
 echo ""
 
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
@@ -510,17 +508,12 @@ echo ""
 echo "  📂 Instalado en:   $INSTALL_DIR"
 echo "  📦 venv en:        $VENV_DIR"
 echo "  🔧 Sudoers en:     $SUDOERS_FILE"
-echo "  ⏱️  Arranque:      retrasado 20 s tras iniciar sesión"
-echo ""
-echo "  🆕 NUEVAS FUNCIONES v2.2.4:"
-echo "      - Detección de navegador en uso (NO apaga mientras navegas)"
-echo "      - Detecta YouTube, Netflix, Twitch, etc. en el título"
-echo "      - Detecta navegadores a pantalla completa"
 echo ""
 echo "  🖱️  Abrir el programa:"
 echo "      - Icono del escritorio"
 echo "      - Menú → '$APP_NAME'"
 echo "      - Terminal:  $APP_SLUG"
 echo ""
-echo "  🗑️  Desinstalar:  $PROJECT_DIR/uninstall.sh"
+echo "  🗑️  Desinstalar:  $INSTALL_DIR/uninstall.sh"
+echo "                    (o $PROJECT_DIR/uninstall.sh)"
 echo ""
