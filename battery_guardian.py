@@ -58,7 +58,7 @@ LOG_FILE = os.path.join(CONFIG_DIR, "battery_guardian.log")
 DEFAULT_CONFIG = {
     "enabled": True,
     "max_charge": 80,
-    "min_charge": 15,
+    "min_charge": 20,
     "check_interval": 20,
     "sound_enabled": True,
     "sound_repeat_ms": 2500,
@@ -68,7 +68,7 @@ DEFAULT_CONFIG = {
     "zoom": 0.8,
     "auto_shutdown_enabled": False,
     "auto_shutdown_minutes": 10,
-    "auto_shutdown_warning_seconds": 60,
+    "auto_shutdown_warning_seconds": 20,
     "auto_shutdown_check_interval": 15,
     # Modo de detección de navegador:
     #   "any"   -> si hay CUALQUIER navegador visible, NO apaga (conservador)
@@ -1174,7 +1174,7 @@ class InfoWindow:
         self.win = tk.Toplevel(parent)
         self.win.title(f"{APP_NAME} - Información de la batería")
         self.win.geometry("760x680")
-        self.win.minsize(560, 460)
+        self.win.minsize(960, 960)
         self.win.configure(bg=COLOR_BG)
 
         def fs(base):
