@@ -2,21 +2,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Battery Guardian v2.2.6
+Battery Guardian v2.2.7
 =======================
 Cuida la salud de la batería de tu portátil Linux.
 
-NOVEDADES v2.2.6:
+NOVEDADES v2.2.7:
+- Interfaz REDISEÑADA en 3 columnas (dashboard horizontal).
+- Toda la información visible de un vistazo, sin scroll vertical.
+- La ventana se adapta al ancho de la pantalla.
 - Detección de VLC/mpv/reproductores multimedia (por proceso y ventana).
-- Detección robusta de multimedia: pactl + playerctl + procesos + ventanas.
-- Nuevo diseño oscuro tipo dashboard (Slate).
-- Botón "Cerrar alerta" manual en los avisos de batería (80% / 15%).
 - Detección de carga mejorada (pending-charge, fully-charged).
 - Detección de navegador configurable: any / video / off.
-- Icono dinámico en la bandeja con menú completo.
-- Auto-apagado por inactividad con cuenta atrás y confirmación.
-- Ventana de informe detallado con salud de batería.
-- Zoom global (Ctrl +/-, Ctrl+rueda, botones).
+- Botón "Cerrar alerta" manual en los avisos de batería (80% / 15%).
 
 Autor: Proyecto Battery Guardian
 Licencia: MIT
@@ -47,7 +44,7 @@ except ImportError:
 # CONSTANTES
 # =========================================================
 APP_NAME = "Battery Guardian"
-APP_VERSION = "2.2.6"
+APP_VERSION = "2.2.7"
 SYSTEMD_SERVICE = "battery-guardian.service"
 SUDOERS_FILE = "/etc/sudoers.d/battery-guardian"
 POWEROFF_PATH = "/usr/sbin/poweroff"
@@ -105,7 +102,6 @@ VIDEO_KEYWORDS = [
     "rtve", "atresplayer", "movistar+", "filmin",
 ]
 
-# Reproductores multimedia conocidos (proceso)
 MEDIA_PLAYER_PROCESSES = [
     "vlc", "mpv", "mplayer", "smplayer", "totem", "parole",
     "celluloid", "rhythmbox", "spotify", "audacious", "clementine",
@@ -114,7 +110,6 @@ MEDIA_PLAYER_PROCESSES = [
     "gnome-mplayer", "dragon", "kaffeine", "noatun", "xine", "ffplay",
 ]
 
-# Reproductores multimedia conocidos (WM_CLASS de ventana)
 MEDIA_PLAYER_CLASSES = [
     "vlc", "mpv", "mplayer", "smplayer", "totem", "parole",
     "celluloid", "rhythmbox", "spotify", "audacious", "clementine",
@@ -509,7 +504,6 @@ def get_idle_seconds() -> float:
 
 
 def is_media_player_running() -> bool:
-    """Detecta si hay un reproductor multimedia ejecutándose (VLC, mpv, etc.)."""
     try:
         out = subprocess.check_output(
             ["ps", "-eo", "comm"],
@@ -525,14 +519,12 @@ def is_media_player_running() -> bool:
 
 
 def is_media_player_window_visible() -> bool:
-    """Detecta si hay una ventana de reproductor multimedia visible (VLC, mpv...)."""
     if not _x11_available() or not _cmd_exists("xdotool"):
         return False
     try:
         for wid, wm_class, title in get_all_visible_windows():
             if is_media_player_class(wm_class):
                 return True
-            # También revisar el título (VLC suele aparecer como "nombre - VLC media player")
             title_low = (title or "").lower()
             if "vlc" in title_low or "mpv" in title_low:
                 return True
@@ -542,14 +534,6 @@ def is_media_player_window_visible() -> bool:
 
 
 def is_multimedia_playing() -> bool:
-    """
-    Detección robusta de multimedia reproduciéndose:
-    1. pactl: sink-inputs en estado RUNNING (audio activo)
-    2. playerctl: reproductor MPRIS en Playing
-    3. Cualquier proceso de reproductor multimedia activo (VLC, mpv...)
-    4. Cualquier ventana de reproductor multimedia visible
-    """
-    # 1) pactl (PulseAudio / PipeWire)
     if _cmd_exists("pactl"):
         try:
             out = subprocess.check_output(
@@ -560,7 +544,6 @@ def is_multimedia_playing() -> bool:
         except Exception:
             pass
 
-    # 2) playerctl (MPRIS)
     if _cmd_exists("playerctl"):
         try:
             out = subprocess.check_output(
@@ -571,11 +554,9 @@ def is_multimedia_playing() -> bool:
         except Exception:
             pass
 
-    # 3) Procesos de reproductores multimedia (VLC/mpv/etc.)
     if is_media_player_running():
         return True
 
-    # 4) Ventanas visibles de reproductores multimedia (VLC/mpv/etc.)
     if is_media_player_window_visible():
         return True
 
@@ -617,6 +598,14 @@ def apply_modern_styles(root: tk.Tk) -> ttk.Style:
                     foreground=COLOR_SUCCESS, font=("Sans Serif", 10, "bold"))
     style.configure("Warn.TLabel", background=COLOR_PANEL,
                     foreground=COLOR_DANGER, font=("Sans Serif", 10, "bold"))
+    style.configure("BigVal.TLabel", background=COLOR_PANEL,
+                    foreground=COLOR_TEXT, font=("Sans Serif", 16, "bold"))
+    style.configure("BigOk.TLabel", background=COLOR_PANEL,
+                    foreground=COLOR_SUCCESS, font=("Sans Serif", 16, "bold"))
+    style.configure("BigWarn.TLabel", background=COLOR_PANEL,
+                    foreground=COLOR_WARN, font=("Sans Serif", 16, "bold"))
+    style.configure("BigDanger.TLabel", background=COLOR_PANEL,
+                    foreground=COLOR_DANGER, font=("Sans Serif", 16, "bold"))
 
     style.configure("TButton", font=("Sans Serif", 10), padding=6, relief="flat")
     style.map("TButton",
@@ -665,11 +654,7 @@ class ZoomManager:
     def __init__(self, root: tk.Tk, initial_zoom: float = 1.0):
         self.root = root
         self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, float(initial_zoom)))
-        self._base_fonts = {}
         self._listeners = []
-
-    def register_font(self, name: str, base_size: int) -> None:
-        self._base_fonts[name] = base_size
 
     def scaled(self, base_size: int) -> int:
         return max(MIN_FONT_SIZE, int(base_size * self.zoom))
@@ -734,7 +719,7 @@ def make_tray_image(level=None, charging=False, alert=False):
 
 
 # =========================================================
-# VENTANA DE ALERTA (80% / 15%) CON BOTÓN CERRAR
+# VENTANA DE ALERTA (80% / 20%) CON BOTÓN CERRAR
 # =========================================================
 class AlertWindow:
 
@@ -1261,12 +1246,10 @@ class AutoShutdownManager:
         if self._dialog_active or time.time() < self._warning_until:
             return
 
-        # 1) Multimedia activa (incluye VLC/mpv por proceso y ventana)
         if is_multimedia_playing():
             log.info("AutoShutdown: multimedia activa (VLC/mpv/audio), no se apaga")
             return
 
-        # 2) Navegador (según modo)
         mode = cfg.get("ignore_browser_mode", "any")
         if mode != "off":
             browser = get_browser_status()
@@ -1275,7 +1258,6 @@ class AutoShutdownManager:
                          f"{browser['reason']}, no se apaga")
                 return
 
-        # 3) Inactividad
         idle = get_idle_seconds()
         if idle < 0:
             return
@@ -1415,15 +1397,28 @@ class TrayIcon:
 
 
 # =========================================================
-# APLICACIÓN PRINCIPAL
+# APLICACIÓN PRINCIPAL (LAYOUT 3 COLUMNAS)
 # =========================================================
 class BatteryGuardianApp:
 
     def __init__(self, root: tk.Tk, start_hidden: bool = False):
         self.root = root
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
-        self.root.geometry("720x950")
-        self.root.minsize(600, 700)
+
+        # Calcular tamaño óptimo según pantalla
+        self.root.update_idletasks()
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+
+        # Ancho: usar hasta 1400px o 95% de la pantalla (lo que sea menor)
+        target_w = min(1400, int(sw * 0.95))
+        target_w = max(1000, target_w)  # mínimo 1000px
+        # Alto: usar hasta 780px o 85% de la pantalla
+        target_h = min(780, int(sh * 0.85))
+        target_h = max(600, target_h)
+
+        self.root.geometry(f"{target_w}x{target_h}")
+        self.root.minsize(1000, 600)
         self.root.resizable(True, True)
 
         self.config = load_config()
@@ -1479,64 +1474,109 @@ class BatteryGuardianApp:
                     "/usr/sbin/poweroff\" > /etc/sudoers.d/battery-guardian'\n"
                     "  sudo chmod 0440 /etc/sudoers.d/battery-guardian"))
 
-    # ----- UI -----
+    # =====================================================
+    # CONSTRUCCIÓN DE LA UI - LAYOUT 3 COLUMNAS
+    # =====================================================
     def _build_ui(self):
-        outer = ttk.Frame(self.root)
-        outer.pack(fill="both", expand=True)
+        root = self.root
+        root.configure(bg=COLOR_BG)
 
-        canvas = tk.Canvas(outer, highlightthickness=0, bg=COLOR_BG)
-        scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        self.scroll_frame = ttk.Frame(canvas, padding=18)
-        self.scroll_frame.bind("<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-        canvas.bind_all("<MouseWheel>",
-            lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
-        main = self.scroll_frame
+        # ---- HEADER (fila superior, full width) ----
+        header = ttk.Frame(root, padding=(18, 12, 18, 4))
+        header.pack(fill="x")
 
-        # ---- Cabecera ----
-        header = ttk.Frame(main)
-        header.pack(fill="x", pady=(0, 12))
-        self.lbl_app = ttk.Label(header, text=f"🔋  {APP_NAME}", style="Title.TLabel")
+        self.lbl_app = ttk.Label(header, text=f"🔋  {APP_NAME}",
+                                 style="Title.TLabel")
         self.lbl_app.pack(side="left")
 
+        self.lbl_sub = ttk.Label(
+            header,
+            text=f"v{APP_VERSION}  ·  Cuida la salud de tu batería",
+            style="Subtitle.TLabel")
+        self.lbl_sub.pack(side="left", padx=(14, 0), pady=(6, 0))
+
+        # Controles de zoom (derecha)
         zbtns = ttk.Frame(header)
         zbtns.pack(side="right")
+        ttk.Button(zbtns, text="A+", width=4,
+                   command=self.zoom_in).pack(side="right", padx=1)
+        ttk.Button(zbtns, text="A−", width=4,
+                   command=self.zoom_out).pack(side="right", padx=1)
+        ttk.Button(zbtns, text="↺", width=3,
+                   command=self.zoom_reset).pack(side="right", padx=1)
         self.lbl_zoom = ttk.Label(zbtns, text=f"{self.zoom_mgr.percent()}%",
                                   font=("Sans Serif", 11, "bold"))
         self.lbl_zoom.pack(side="right", padx=6)
-        ttk.Button(zbtns, text="A+", width=4, command=self.zoom_in).pack(side="right", padx=1)
-        ttk.Button(zbtns, text="A−", width=4, command=self.zoom_out).pack(side="right", padx=1)
-        ttk.Button(zbtns, text="↺", width=3, command=self.zoom_reset).pack(side="right", padx=1)
 
-        self.lbl_sub = ttk.Label(main,
-            text=f"Versión {APP_VERSION}   ·   Cuida la salud de tu batería",
-            style="Subtitle.TLabel")
-        self.lbl_sub.pack(pady=(0, 12))
+        # ---- CONTENEDOR PRINCIPAL: 3 COLUMNAS ----
+        cols = ttk.Frame(root, padding=(18, 6, 18, 6))
+        cols.pack(fill="both", expand=True)
+        cols.columnconfigure(0, weight=1, uniform="col")
+        cols.columnconfigure(1, weight=1, uniform="col")
+        cols.columnconfigure(2, weight=1, uniform="col")
+        cols.rowconfigure(0, weight=1)
 
-        # ---- Tarjeta 1: Estado batería ----
-        card_status = ttk.LabelFrame(main, text="  Estado de la batería  ",
+        # ============ COLUMNA 1: Estado + Límites ============
+        col1 = ttk.Frame(cols)
+        col1.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        # --- Tarjeta: Estado de la batería ---
+        card_status = ttk.LabelFrame(col1, text="  🔋 Estado de la batería  ",
                                      style="Card.TLabelframe")
-        card_status.pack(fill="x", pady=6)
+        card_status.pack(fill="x", pady=(0, 10))
 
-        self.lbl_state = ttk.Label(card_status, text="Estado: —", style="Info.TLabel")
+        # Nivel grande y destacado
+        lvl_frame = ttk.Frame(card_status, style="Card.TFrame")
+        lvl_frame.pack(fill="x", pady=(0, 8))
+        self.lbl_level = ttk.Label(lvl_frame, text="—", style="BigVal.TLabel")
+        self.lbl_level.pack(side="left")
+        ttk.Label(lvl_frame, text="de carga", style="Card.TLabel"
+                  ).pack(side="left", padx=(8, 0))
+
+        self.lbl_state = ttk.Label(card_status, text="Estado: —",
+                                   style="Info.TLabel")
         self.lbl_state.pack(anchor="w", pady=1)
-        self.lbl_level = ttk.Label(card_status, text="Nivel: —", style="Info.TLabel")
-        self.lbl_level.pack(anchor="w", pady=1)
-        self.lbl_energy_full = ttk.Label(card_status, text="energy-full: —", style="Info.TLabel")
+        self.lbl_energy_full = ttk.Label(card_status, text="energy-full: —",
+                                         style="Info.TLabel")
         self.lbl_energy_full.pack(anchor="w", pady=1)
-        self.lbl_capacity = ttk.Label(card_status, text="capacity (salud): —", style="Info.TLabel")
+        self.lbl_capacity = ttk.Label(card_status, text="capacity (salud): —",
+                                      style="Info.TLabel")
         self.lbl_capacity.pack(anchor="w", pady=1)
-        self.lbl_cycles = ttk.Label(card_status, text="charge-cycles: —", style="Info.TLabel")
+        self.lbl_cycles = ttk.Label(card_status, text="charge-cycles: —",
+                                    style="Info.TLabel")
         self.lbl_cycles.pack(anchor="w", pady=1)
 
-        # ---- Tarjeta 2: Control monitoreo ----
-        card_ctrl = ttk.LabelFrame(main, text="  Control de monitoreo  ",
+        # --- Tarjeta: Límites de carga ---
+        card_lim = ttk.LabelFrame(col1, text="  ⚙️ Límites de carga  ",
+                                  style="Card.TLabelframe")
+        card_lim.pack(fill="x", pady=(0, 10))
+
+        f_max = ttk.Frame(card_lim, style="Card.TFrame")
+        f_max.pack(fill="x", pady=4)
+        ttk.Label(f_max, text="Máximo de carga (%):",
+                  style="Card.TLabel").pack(side="left")
+        self.max_var = tk.IntVar(value=self.config["max_charge"])
+        sp_max = ttk.Spinbox(f_max, from_=50, to=100, textvariable=self.max_var,
+                             width=6, justify="center")
+        sp_max.pack(side="right")
+        sp_max.bind("<FocusOut>", lambda e: self._save())
+        sp_max.bind("<Return>", lambda e: self._save())
+
+        f_min = ttk.Frame(card_lim, style="Card.TFrame")
+        f_min.pack(fill="x", pady=4)
+        ttk.Label(f_min, text="Mínimo de carga (%):",
+                  style="Card.TLabel").pack(side="left")
+        self.min_var = tk.IntVar(value=self.config["min_charge"])
+        sp_min = ttk.Spinbox(f_min, from_=0, to=50, textvariable=self.min_var,
+                             width=6, justify="center")
+        sp_min.pack(side="right")
+        sp_min.bind("<FocusOut>", lambda e: self._save())
+        sp_min.bind("<Return>", lambda e: self._save())
+
+        # --- Tarjeta: Control de monitoreo ---
+        card_ctrl = ttk.LabelFrame(col1, text="  🎛️ Control de monitoreo  ",
                                    style="Card.TLabelframe")
-        card_ctrl.pack(fill="x", pady=6)
+        card_ctrl.pack(fill="x")
 
         self.enabled_var = tk.BooleanVar(value=self.config["enabled"])
         ttk.Checkbutton(card_ctrl, text="Activar monitoreo de batería",
@@ -1556,68 +1596,52 @@ class BatteryGuardianApp:
                         style="Card.TCheckbutton",
                         command=self._save).pack(anchor="w", pady=2)
 
-        # ---- Tarjeta 3: Límites ----
-        card_lim = ttk.LabelFrame(main, text="  Límites de carga  ",
-                                  style="Card.TLabelframe")
-        card_lim.pack(fill="x", pady=6)
+        # ============ COLUMNA 2: Auto-apagado (central) ============
+        col2 = ttk.Frame(cols)
+        col2.grid(row=0, column=1, sticky="nsew", padx=8)
 
-        f_max = ttk.Frame(card_lim, style="Card.TFrame")
-        f_max.pack(fill="x", pady=6)
-        ttk.Label(f_max, text="Máximo de carga (%):", style="Card.TLabel").pack(side="left")
-        self.max_var = tk.IntVar(value=self.config["max_charge"])
-        sp_max = ttk.Spinbox(f_max, from_=50, to=100, textvariable=self.max_var,
-                             width=6, justify="center")
-        sp_max.pack(side="right")
-        sp_max.bind("<FocusOut>", lambda e: self._save())
-        sp_max.bind("<Return>", lambda e: self._save())
-
-        f_min = ttk.Frame(card_lim, style="Card.TFrame")
-        f_min.pack(fill="x", pady=6)
-        ttk.Label(f_min, text="Mínimo de carga (%):", style="Card.TLabel").pack(side="left")
-        self.min_var = tk.IntVar(value=self.config["min_charge"])
-        sp_min = ttk.Spinbox(f_min, from_=0, to=50, textvariable=self.min_var,
-                             width=6, justify="center")
-        sp_min.pack(side="right")
-        sp_min.bind("<FocusOut>", lambda e: self._save())
-        sp_min.bind("<Return>", lambda e: self._save())
-
-        # ---- Tarjeta 4: Auto-apagado ----
-        card_sd = ttk.LabelFrame(main, text="  Auto-apagado por inactividad  ",
+        card_sd = ttk.LabelFrame(col2,
+                                 text="  ⏻ Auto-apagado por inactividad  ",
                                  style="Card.TLabelframe")
-        card_sd.pack(fill="x", pady=6)
+        card_sd.pack(fill="both", expand=True)
 
-        self.shutdown_var = tk.BooleanVar(value=self.config["auto_shutdown_enabled"])
+        self.shutdown_var = tk.BooleanVar(
+            value=self.config["auto_shutdown_enabled"])
         ttk.Checkbutton(card_sd,
                         text="Activar auto-apagado cuando el PC esté inactivo",
                         variable=self.shutdown_var,
                         style="Card.TCheckbutton",
-                        command=self._on_toggle_shutdown_check).pack(anchor="w", pady=4)
+                        command=self._on_toggle_shutdown_check
+                        ).pack(anchor="w", pady=(0, 8))
 
         f1 = ttk.Frame(card_sd, style="Card.TFrame")
-        f1.pack(fill="x", pady=6)
+        f1.pack(fill="x", pady=4)
         ttk.Label(f1, text="Apagar tras (minutos inactivo):",
                   style="Card.TLabel").pack(side="left")
-        self.shutdown_min_var = tk.IntVar(value=self.config["auto_shutdown_minutes"])
-        sp1 = ttk.Spinbox(f1, from_=1, to=240, textvariable=self.shutdown_min_var,
+        self.shutdown_min_var = tk.IntVar(
+            value=self.config["auto_shutdown_minutes"])
+        sp1 = ttk.Spinbox(f1, from_=1, to=240,
+                          textvariable=self.shutdown_min_var,
                           width=6, justify="center")
         sp1.pack(side="right")
         sp1.bind("<FocusOut>", lambda e: self._save())
         sp1.bind("<Return>", lambda e: self._save())
 
         f2 = ttk.Frame(card_sd, style="Card.TFrame")
-        f2.pack(fill="x", pady=6)
+        f2.pack(fill="x", pady=4)
         ttk.Label(f2, text="Aviso previo (segundos):",
                   style="Card.TLabel").pack(side="left")
         self.shutdown_warn_var = tk.IntVar(
             value=self.config["auto_shutdown_warning_seconds"])
-        sp2 = ttk.Spinbox(f2, from_=0, to=600, textvariable=self.shutdown_warn_var,
+        sp2 = ttk.Spinbox(f2, from_=0, to=600,
+                          textvariable=self.shutdown_warn_var,
                           width=6, justify="center")
         sp2.pack(side="right")
         sp2.bind("<FocusOut>", lambda e: self._save())
         sp2.bind("<Return>", lambda e: self._save())
 
         f_mode = ttk.Frame(card_sd, style="Card.TFrame")
-        f_mode.pack(fill="x", pady=(10, 4))
+        f_mode.pack(fill="x", pady=4)
         ttk.Label(f_mode, text="Modo detección navegador:",
                   style="Card.TLabel").pack(side="left")
         self.browser_mode_var = tk.StringVar(
@@ -1628,40 +1652,99 @@ class BatteryGuardianApp:
         combo_mode.pack(side="right")
         combo_mode.bind("<<ComboboxSelected>>", lambda e: self._save())
 
-        self.lbl_idle = ttk.Label(card_sd, text="Inactividad: —", style="Muted.TLabel")
-        self.lbl_idle.pack(anchor="w", pady=(8, 2))
-        self.lbl_media = ttk.Label(card_sd, text="Multimedia: —", style="Muted.TLabel")
-        self.lbl_media.pack(anchor="w", pady=2)
-        self.lbl_browser = ttk.Label(card_sd, text="Navegador: —", style="Muted.TLabel")
-        self.lbl_browser.pack(anchor="w", pady=2)
-        self.lbl_sudoers = ttk.Label(card_sd, text="Sudoers: —", style="Muted.TLabel")
-        self.lbl_sudoers.pack(anchor="w", pady=2)
+        ttk.Separator(card_sd, orient="horizontal").pack(fill="x", pady=10)
+
+        ttk.Label(card_sd, text="📡 Estado en vivo", style="Card.TLabel",
+                  font=("Sans Serif", 10, "bold")).pack(anchor="w", pady=(0, 4))
+
+        self.lbl_idle = ttk.Label(card_sd, text="Inactividad: —",
+                                  style="Muted.TLabel")
+        self.lbl_idle.pack(anchor="w", pady=1)
+        self.lbl_media = ttk.Label(card_sd, text="Multimedia: —",
+                                   style="Muted.TLabel")
+        self.lbl_media.pack(anchor="w", pady=1)
+        self.lbl_browser = ttk.Label(card_sd, text="Navegador: —",
+                                     style="Muted.TLabel")
+        self.lbl_browser.pack(anchor="w", pady=1)
+        self.lbl_sudoers = ttk.Label(card_sd, text="Sudoers: —",
+                                     style="Muted.TLabel")
+        self.lbl_sudoers.pack(anchor="w", pady=1)
+
+        ttk.Separator(card_sd, orient="horizontal").pack(fill="x", pady=10)
 
         ttk.Label(card_sd,
-                  text=("💡 Modos: any = no apaga si hay navegador visible\n"
-                        "   video = solo si detecta vídeo · off = no comprobar\n"
-                        "   VLC/mpv y otros reproductores siempre bloquean el apagado"),
+                  text=("💡 Modos navegador:\n"
+                        "   any   = no apaga si hay navegador visible\n"
+                        "   video = solo si detecta vídeo/fullscreen\n"
+                        "   off   = no comprobar navegador\n\n"
+                        "   VLC/mpv/audio siempre bloquean el apagado."),
                   style="Muted.TLabel",
-                  justify="left").pack(anchor="w", pady=(8, 4))
+                  justify="left").pack(anchor="w", pady=(0, 8))
 
         ttk.Button(card_sd, text="🧪  Probar aviso de apagado",
-                   command=self._test_shutdown_warning).pack(anchor="w", pady=(6, 2))
+                   command=self._test_shutdown_warning).pack(anchor="w",
+                                                             pady=(4, 0))
 
-        # ---- Botones inferiores ----
-        btns = ttk.Frame(main)
-        btns.pack(pady=14)
-        ttk.Button(btns, text="💾  Guardar", style="Primary.TButton",
-                   command=self._save, width=16).grid(row=0, column=0, padx=5, pady=4)
-        ttk.Button(btns, text="📊  Ver informe completo",
-                   command=self.open_info_window, width=24).grid(row=0, column=1, padx=5, pady=4)
-        ttk.Button(btns, text="🧪  Probar alerta batería",
-                   command=self._test_alert, width=22).grid(row=1, column=0, padx=5, pady=4)
-        ttk.Button(btns, text="Ocultar en bandeja",
-                   command=self.hide_window, width=20).grid(row=1, column=1, padx=5, pady=4)
+        # ============ COLUMNA 3: Botones + acciones ============
+        col3 = ttk.Frame(cols)
+        col3.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
 
-        ttk.Label(main,
-                  text="💡 Zoom: Ctrl + rueda del ratón  ·  Ctrl + / −  ·  botones A−/A+/↺",
-                  style="Subtitle.TLabel").pack(pady=(4, 14))
+        card_actions = ttk.LabelFrame(col3, text="  ⚡ Acciones rápidas  ",
+                                      style="Card.TLabelframe")
+        card_actions.pack(fill="x", pady=(0, 10))
+
+        ttk.Button(card_actions, text="💾  Guardar cambios",
+                   style="Primary.TButton", command=self._save
+                   ).pack(fill="x", pady=4)
+        ttk.Button(card_actions, text="📊  Ver informe completo",
+                   command=self.open_info_window
+                   ).pack(fill="x", pady=4)
+        ttk.Button(card_actions, text="🧪  Probar alerta de batería",
+                   command=self._test_alert
+                   ).pack(fill="x", pady=4)
+        ttk.Button(card_actions, text="📥  Ocultar en bandeja",
+                   command=self.hide_window
+                   ).pack(fill="x", pady=4)
+
+        # --- Tarjeta: Atajos de teclado ---
+        card_help = ttk.LabelFrame(col3, text="  ⌨️ Atajos y zoom  ",
+                                   style="Card.TLabelframe")
+        card_help.pack(fill="x", pady=(0, 10))
+
+        ttk.Label(card_help,
+                  text="• Ctrl + rueda del ratón → Zoom\n"
+                       "• Ctrl + / −           → Zoom\n"
+                       "• Ctrl + 0              → Reset 100%",
+                  style="Muted.TLabel", justify="left"
+                  ).pack(anchor="w", pady=2)
+
+        # --- Tarjeta: Información del sistema ---
+        card_sys = ttk.LabelFrame(col3, text="  ℹ️ Acerca de  ",
+                                  style="Card.TLabelframe")
+        card_sys.pack(fill="both", expand=True)
+
+        ttk.Label(card_sys,
+                  text=f"{APP_NAME}\nVersión {APP_VERSION}\n\n"
+                       "Cuida la salud de la batería de tu\n"
+                       "portátil manteniéndola entre los\n"
+                       "límites configurados.\n\n"
+                       "Los avisos de 80% y 20% se pueden\n"
+                       "cerrar manualmente si ya realizaste\n"
+                       "la acción.",
+                  style="Muted.TLabel", justify="left"
+                  ).pack(anchor="w", pady=2)
+
+        # ---- FOOTER: barra inferior ----
+        footer = ttk.Frame(root, padding=(18, 4, 18, 12))
+        footer.pack(fill="x")
+
+        ttk.Label(footer,
+                  text="💡 La ventana se adapta al tamaño de tu pantalla. "
+                       "Pulsa X para ocultar en la bandeja.",
+                  style="Subtitle.TLabel").pack(side="left")
+
+        ttk.Button(footer, text="Salir del programa",
+                   command=self.ask_quit).pack(side="right")
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_x)
 
@@ -1839,12 +1922,21 @@ class BatteryGuardianApp:
         charging = state in ("charging", "fully-charged", "pending-charge")
 
         if state is None or level is None:
+            self.lbl_level.config(text="—", style="BigVal.TLabel")
             self.lbl_state.config(text="Estado: ⚠ No se detectó batería")
-            self.lbl_level.config(text="Nivel: —")
             self.lbl_energy_full.config(text="energy-full: —")
             self.lbl_capacity.config(text="capacity (salud): —")
             self.lbl_cycles.config(text="charge-cycles: —")
         else:
+            # Nivel grande con color
+            if level <= 20:
+                style_lvl = "BigDanger.TLabel"
+            elif level <= 40:
+                style_lvl = "BigWarn.TLabel"
+            else:
+                style_lvl = "BigOk.TLabel"
+            self.lbl_level.config(text=f"{level}%", style=style_lvl)
+
             estado_map = {
                 "charging": "🔌 Cargando",
                 "discharging": "🔋 Descargando",
@@ -1854,7 +1946,6 @@ class BatteryGuardianApp:
                 "unknown": "❓ Desconocido",
             }
             self.lbl_state.config(text=f"Estado: {estado_map.get(state, state)}")
-            self.lbl_level.config(text=f"Nivel: {level}%")
             if info["energy_full"] is not None:
                 self.lbl_energy_full.config(
                     text=f"energy-full: {info['energy_full']:.2f} Wh")
@@ -1879,33 +1970,40 @@ class BatteryGuardianApp:
         else:
             self.lbl_idle.config(text="Inactividad: no disponible")
 
-        # Multimedia (audio + reproductores)
         media = is_multimedia_playing()
         media_extra = ""
         if is_media_player_running():
             media_extra = " + reproductor (VLC/mpv)"
-        self.lbl_media.config(
-            text=f"Multimedia: {'🎵 reproduciéndose' + media_extra if media else '🔇 silencio'}")
+        if media:
+            self.lbl_media.config(
+                text=f"Multimedia: 🎵 activa{media_extra}",
+                style="Ok.TLabel")
+        else:
+            self.lbl_media.config(
+                text="Multimedia: 🔇 silencio", style="Muted.TLabel")
 
         browser = get_browser_status()
         if not _cmd_exists("xdotool"):
-            self.lbl_browser.config(text="Navegador: ⚠ xdotool no instalado",
-                                    style="Warn.TLabel")
-        elif browser.get("in_use"):
             self.lbl_browser.config(
-                text=f"Navegador: 🌐 EN USO ({browser['reason'][:45]})",
+                text="Navegador: ⚠ xdotool no instalado",
+                style="Warn.TLabel")
+        elif browser.get("in_use"):
+            reason = browser['reason'][:40]
+            self.lbl_browser.config(
+                text=f"Navegador: 🌐 EN USO ({reason})",
                 style="Ok.TLabel")
         else:
-            self.lbl_browser.config(text="Navegador: ❌ no detectado",
-                                    style="Muted.TLabel")
+            self.lbl_browser.config(
+                text="Navegador: ❌ no detectado",
+                style="Muted.TLabel")
 
         sudoers_ok = check_sudoers_configured()
         if sudoers_ok:
-            self.lbl_sudoers.config(text="Sudoers: ✅ configurado",
-                                    style="Ok.TLabel")
+            self.lbl_sudoers.config(
+                text="Sudoers: ✅ configurado", style="Ok.TLabel")
         else:
-            self.lbl_sudoers.config(text="Sudoers: ❌ NO configurado",
-                                    style="Warn.TLabel")
+            self.lbl_sudoers.config(
+                text="Sudoers: ❌ NO configurado", style="Warn.TLabel")
 
         if self.tray:
             self.tray.update(level=level, charging=charging,
