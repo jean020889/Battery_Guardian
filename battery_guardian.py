@@ -7,12 +7,13 @@ Battery Guardian v2.2.6
 Cuida la salud de la batería de tu portátil Linux.
 
 NOVEDADES v2.2.6:
-- Interfaz moderna con tema oscuro tipo dashboard (Slate).
-- Código modular, tipado y ordenado.
+- Detección de VLC/mpv/reproductores multimedia (por proceso y ventana).
+- Detección robusta de multimedia: pactl + playerctl + procesos + ventanas.
+- Nuevo diseño oscuro tipo dashboard (Slate).
 - Botón "Cerrar alerta" manual en los avisos de batería (80% / 15%).
-- Detección de carga mejorada (acepta pending-charge, fully-charged).
+- Detección de carga mejorada (pending-charge, fully-charged).
 - Detección de navegador configurable: any / video / off.
-- Icono dinámico en la bandeja del sistema con menú completo.
+- Icono dinámico en la bandeja con menú completo.
 - Auto-apagado por inactividad con cuenta atrás y confirmación.
 - Ventana de informe detallado con salud de batería.
 - Zoom global (Ctrl +/-, Ctrl+rueda, botones).
@@ -102,6 +103,24 @@ VIDEO_KEYWORDS = [
     "deezer", "soundcloud", "bandcamp", "crunchyroll",
     "hbomax", "paramount+", "peacock", "apple tv", "canal+",
     "rtve", "atresplayer", "movistar+", "filmin",
+]
+
+# Reproductores multimedia conocidos (proceso)
+MEDIA_PLAYER_PROCESSES = [
+    "vlc", "mpv", "mplayer", "smplayer", "totem", "parole",
+    "celluloid", "rhythmbox", "spotify", "audacious", "clementine",
+    "banshee", "deadbeef", "mpd", "cmus", "moc", "kodi",
+    "plex", "plexmediaplayer", "elisa", "strawberry", "quodlibet",
+    "gnome-mplayer", "dragon", "kaffeine", "noatun", "xine", "ffplay",
+]
+
+# Reproductores multimedia conocidos (WM_CLASS de ventana)
+MEDIA_PLAYER_CLASSES = [
+    "vlc", "mpv", "mplayer", "smplayer", "totem", "parole",
+    "celluloid", "rhythmbox", "spotify", "audacious", "clementine",
+    "banshee", "deadbeef", "kodi", "plexmediaplayer",
+    "elisa", "strawberry", "quodlibet", "gnome-mplayer",
+    "kaffeine", "xine", "ffplay",
 ]
 
 # Paleta moderna (Dark theme)
@@ -357,6 +376,13 @@ def is_browser_class(wm_class: str) -> bool:
     return any(b in wm_low for b in BROWSER_CLASSES)
 
 
+def is_media_player_class(wm_class: str) -> bool:
+    if not wm_class:
+        return False
+    wm_low = wm_class.lower()
+    return any(m in wm_low for m in MEDIA_PLAYER_CLASSES)
+
+
 def is_window_fullscreen(wid: str) -> bool:
     if not wid or not _x11_available() or not _cmd_exists("xprop"):
         return False
@@ -482,7 +508,48 @@ def get_idle_seconds() -> float:
     return -1.0
 
 
+def is_media_player_running() -> bool:
+    """Detecta si hay un reproductor multimedia ejecutándose (VLC, mpv, etc.)."""
+    try:
+        out = subprocess.check_output(
+            ["ps", "-eo", "comm"],
+            text=True, timeout=3, stderr=subprocess.DEVNULL).lower()
+        lines = set(line.strip() for line in out.splitlines())
+        for proc in MEDIA_PLAYER_PROCESSES:
+            for line in lines:
+                if line == proc or line.startswith(proc + " ") or line.startswith(proc + "-"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def is_media_player_window_visible() -> bool:
+    """Detecta si hay una ventana de reproductor multimedia visible (VLC, mpv...)."""
+    if not _x11_available() or not _cmd_exists("xdotool"):
+        return False
+    try:
+        for wid, wm_class, title in get_all_visible_windows():
+            if is_media_player_class(wm_class):
+                return True
+            # También revisar el título (VLC suele aparecer como "nombre - VLC media player")
+            title_low = (title or "").lower()
+            if "vlc" in title_low or "mpv" in title_low:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def is_multimedia_playing() -> bool:
+    """
+    Detección robusta de multimedia reproduciéndose:
+    1. pactl: sink-inputs en estado RUNNING (audio activo)
+    2. playerctl: reproductor MPRIS en Playing
+    3. Cualquier proceso de reproductor multimedia activo (VLC, mpv...)
+    4. Cualquier ventana de reproductor multimedia visible
+    """
+    # 1) pactl (PulseAudio / PipeWire)
     if _cmd_exists("pactl"):
         try:
             out = subprocess.check_output(
@@ -492,6 +559,8 @@ def is_multimedia_playing() -> bool:
                 return True
         except Exception:
             pass
+
+    # 2) playerctl (MPRIS)
     if _cmd_exists("playerctl"):
         try:
             out = subprocess.check_output(
@@ -501,6 +570,15 @@ def is_multimedia_playing() -> bool:
                 return True
         except Exception:
             pass
+
+    # 3) Procesos de reproductores multimedia (VLC/mpv/etc.)
+    if is_media_player_running():
+        return True
+
+    # 4) Ventanas visibles de reproductores multimedia (VLC/mpv/etc.)
+    if is_media_player_window_visible():
+        return True
+
     return False
 
 
@@ -656,7 +734,7 @@ def make_tray_image(level=None, charging=False, alert=False):
 
 
 # =========================================================
-# VENTANA DE ALERTA (80% / 20%) CON BOTÓN CERRAR
+# VENTANA DE ALERTA (80% / 15%) CON BOTÓN CERRAR
 # =========================================================
 class AlertWindow:
 
@@ -1000,6 +1078,10 @@ class InfoWindow:
             lines.append(f"  Tiempo inactivo:    "
                          f"{int(idle_s // 60)} min {int(idle_s % 60)} s")
         lines.append(f"  Multimedia activa:  {'🎵 SÍ' if media else '🔇 No'}")
+        if is_media_player_running():
+            lines.append(f"  Reproductor activo: 🎬 SÍ (VLC/mpv/otro detectado)")
+        if is_media_player_window_visible():
+            lines.append(f"  Ventana media:      🖼️ SÍ (reproductor visible)")
         lines.append("")
 
         lines.append("═" * 62)
@@ -1179,10 +1261,12 @@ class AutoShutdownManager:
         if self._dialog_active or time.time() < self._warning_until:
             return
 
+        # 1) Multimedia activa (incluye VLC/mpv por proceso y ventana)
         if is_multimedia_playing():
-            log.info("AutoShutdown: multimedia activa, no se apaga")
+            log.info("AutoShutdown: multimedia activa (VLC/mpv/audio), no se apaga")
             return
 
+        # 2) Navegador (según modo)
         mode = cfg.get("ignore_browser_mode", "any")
         if mode != "off":
             browser = get_browser_status()
@@ -1191,6 +1275,7 @@ class AutoShutdownManager:
                          f"{browser['reason']}, no se apaga")
                 return
 
+        # 3) Inactividad
         idle = get_idle_seconds()
         if idle < 0:
             return
@@ -1554,7 +1639,8 @@ class BatteryGuardianApp:
 
         ttk.Label(card_sd,
                   text=("💡 Modos: any = no apaga si hay navegador visible\n"
-                        "   video = solo si detecta vídeo · off = no comprobar"),
+                        "   video = solo si detecta vídeo · off = no comprobar\n"
+                        "   VLC/mpv y otros reproductores siempre bloquean el apagado"),
                   style="Muted.TLabel",
                   justify="left").pack(anchor="w", pady=(8, 4))
 
@@ -1793,9 +1879,13 @@ class BatteryGuardianApp:
         else:
             self.lbl_idle.config(text="Inactividad: no disponible")
 
+        # Multimedia (audio + reproductores)
         media = is_multimedia_playing()
+        media_extra = ""
+        if is_media_player_running():
+            media_extra = " + reproductor (VLC/mpv)"
         self.lbl_media.config(
-            text=f"Multimedia: {'🎵 reproduciéndose' if media else '🔇 silencio'}")
+            text=f"Multimedia: {'🎵 reproduciéndose' + media_extra if media else '🔇 silencio'}")
 
         browser = get_browser_status()
         if not _cmd_exists("xdotool"):
@@ -1881,6 +1971,8 @@ def print_info_cli():
     else:
         print(f"  Inactividad:        no disponible")
     print(f"  Multimedia activa:  {'SÍ' if media else 'No'}")
+    print(f"  Reproductor activo: {'SÍ' if is_media_player_running() else 'No'}")
+    print(f"  Ventana media:      {'SÍ' if is_media_player_window_visible() else 'No'}")
     print(f"  Navegador en uso:   {'SÍ' if browser.get('in_use') else 'No'}")
     if browser.get("reason"):
         print(f"      Motivo:         {browser['reason']}")
