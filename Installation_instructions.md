@@ -83,6 +83,16 @@ text
 
   📌 El programa ya está corriendo en segundo plano.
      Búscalo en la bandeja del sistema (donde WiFi/Bluetooth).
+
+###Desinstalación:
+
+```bash
+chmod +x uninstall.sh uninstall.sh
+./uninstall.sh
+```
+
+
+     
 🖱️ Cómo abrir el programa
 Tienes 4 formas de abrir la ventana de configuración:
 
