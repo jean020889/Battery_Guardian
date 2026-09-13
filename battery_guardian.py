@@ -2,17 +2,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Battery Guardian v2.2.8
+Battery Guardian v2.2.9
 =======================
 Cuida la salud de la batería de tu portátil Linux.
 
-NOVEDADES v2.2.8:
-- Toggle buttons interactivos (cambian de color al activar/desactivar).
-- Diálogo de apagado con botón gigante STOP para cancelar fácilmente.
-- Zoom funcional en TODO el texto de la ventana (estilos ttk incluidos).
-- Informe a pantalla completa con dashboard en 3 columnas.
-- Detección de VLC/mpv/reproductores multimedia (proceso + ventana).
-- Botón "Cerrar alerta" manual en los avisos de batería (80% / 20%).
+NOVEDADES v2.2.9:
+- Apagado: usa 'systemctl poweroff' como PRIMER método.
+- Manejo robusto de errores: registra cualquier fallo al arrancar.
+- Nuevo modo '--debug' para ver errores en la terminal.
+- Sistema de excepthook global que escribe traceback al log.
 
 Autor: Proyecto Battery Guardian
 Licencia: MIT
@@ -25,6 +23,7 @@ import json
 import time
 import shutil
 import logging
+import traceback
 import threading
 import subprocess
 import tkinter as tk
@@ -35,15 +34,16 @@ try:
     import pystray
     from PIL import Image, ImageDraw
     TRAY_AVAILABLE = True
-except ImportError:
+except ImportError as _e:
     TRAY_AVAILABLE = False
+    _TRAY_IMPORT_ERROR = str(_e)
 
 
 # =========================================================
 # CONSTANTES
 # =========================================================
 APP_NAME = "Battery Guardian"
-APP_VERSION = "2.2.8"
+APP_VERSION = "2.2.9"
 SYSTEMD_SERVICE = "battery-guardian.service"
 SUDOERS_FILE = "/etc/sudoers.d/battery-guardian"
 POWEROFF_PATH = "/usr/sbin/poweroff"
@@ -145,6 +145,32 @@ def setup_logging() -> None:
 
 
 log = logging.getLogger(APP_NAME)
+
+
+def install_excepthooks():
+    """Registra hooks para capturar cualquier excepción no controlada."""
+    def _excepthook(exc_type, exc_value, exc_tb):
+        try:
+            msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+            log.error(f"EXCEPCIÓN NO CONTROLADA:\n{msg}")
+        except Exception:
+            pass
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _excepthook
+
+    def _thread_excepthook(args):
+        try:
+            msg = "".join(traceback.format_exception(
+                args.exc_type, args.exc_value, args.exc_traceback))
+            log.error(f"EXCEPCIÓN EN HILO '{args.thread.name if args.thread else '?'}':\n{msg}")
+        except Exception:
+            pass
+
+    try:
+        threading.excepthook = _thread_excepthook
+    except Exception:
+        pass
 
 
 # =========================================================
@@ -565,16 +591,9 @@ def is_multimedia_playing() -> bool:
 
 
 # =========================================================
-# GESTOR DE ZOOM GLOBAL (afecta a TODO el texto)
+# GESTOR DE ZOOM GLOBAL
 # =========================================================
 class ZoomManager:
-    """
-    Zoom global: actualiza los tamaños de:
-    - Todos los estilos ttk definidos (TLabel, Card.TLabel, etc.)
-    - Widgets tk registrados (tk.Label, tk.Button con font=...)
-    """
-
-    # Estilos ttk con sus tamaños base
     BASE_STYLE_FONTS = {
         "TLabel": ("Sans Serif", 10, "normal"),
         "Card.TLabel": ("Sans Serif", 10, "normal"),
@@ -603,13 +622,12 @@ class ZoomManager:
         self.root = root
         self.style = style
         self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, float(initial_zoom)))
-        self._widget_fonts = []  # (widget, family, base_size, weight)
+        self._widget_fonts = []
+        self._listeners = []
 
     def register_widget(self, widget, family: str, base_size: int,
                         weight: str = "normal") -> None:
-        """Registra un widget tk para que su fuente se escale."""
         self._widget_fonts.append((widget, family, base_size, weight))
-        # Aplicar inmediatamente
         try:
             widget.config(font=(family, self.scaled(base_size), weight))
         except Exception:
@@ -634,6 +652,9 @@ class ZoomManager:
     def percent(self) -> int:
         return int(round(self.zoom * 100))
 
+    def add_listener(self, cb) -> None:
+        self._listeners.append(cb)
+
     def apply(self) -> None:
         # 1) Estilos ttk
         for style_name, (family, base, weight) in self.BASE_STYLE_FONTS.items():
@@ -643,7 +664,7 @@ class ZoomManager:
             except Exception:
                 pass
 
-        # 2) Widgets tk registrados (labels, buttons con font=...)
+        # 2) Widgets tk registrados
         alive = []
         for widget, family, base, weight in self._widget_fonts:
             try:
@@ -652,6 +673,13 @@ class ZoomManager:
             except Exception:
                 pass
         self._widget_fonts = alive
+
+        # 3) Listeners
+        for cb in self._listeners:
+            try:
+                cb()
+            except Exception:
+                pass
 
 
 # =========================================================
@@ -739,11 +767,9 @@ def apply_modern_styles(root: tk.Tk) -> ttk.Style:
 
 
 # =========================================================
-# TOGGLE BUTTON INTERACTIVO (en vez de Checkbutton)
+# TOGGLE BUTTON
 # =========================================================
 class ToggleButton(tk.Frame):
-    """Botón que se ve activado/desactivado con color."""
-
     def __init__(self, parent, text: str, variable: tk.BooleanVar,
                  command=None, zoom_mgr: ZoomManager = None,
                  bg=COLOR_PANEL, width=32):
@@ -766,11 +792,8 @@ class ToggleButton(tk.Frame):
         self.btn.pack(fill="x")
         self._apply_color()
 
-        # Registrar en el ZoomManager
         if zoom_mgr:
             zoom_mgr.register_widget(self.btn, "Sans Serif", 11, "bold")
-            # El ancho también escala
-            self.btn.config(width=max(20, int(width * zoom_mgr.zoom / 1.0)))
 
     def _label_for_state(self) -> str:
         if self.variable.get():
@@ -778,18 +801,24 @@ class ToggleButton(tk.Frame):
         return f"  ○  {self.text_base}"
 
     def _apply_color(self):
-        if self.variable.get():
-            self.btn.config(bg=COLOR_BTN_ON, fg="white",
-                            activebackground="#16a34a",
-                            activeforeground="white")
-        else:
-            self.btn.config(bg=COLOR_BTN_OFF, fg="white",
-                            activebackground=COLOR_BORDER,
-                            activeforeground="white")
+        try:
+            if self.variable.get():
+                self.btn.config(bg=COLOR_BTN_ON, fg="white",
+                                activebackground="#16a34a",
+                                activeforeground="white")
+            else:
+                self.btn.config(bg=COLOR_BTN_OFF, fg="white",
+                                activebackground=COLOR_BORDER,
+                                activeforeground="white")
+        except Exception:
+            pass
 
     def _on_click(self):
         self.variable.set(not self.variable.get())
-        self.btn.config(text=self._label_for_state())
+        try:
+            self.btn.config(text=self._label_for_state())
+        except Exception:
+            pass
         self._apply_color()
         if self.command:
             try:
@@ -798,8 +827,10 @@ class ToggleButton(tk.Frame):
                 log.error(f"Error en toggle command: {e}")
 
     def refresh(self):
-        """Refrescar estado desde la variable."""
-        self.btn.config(text=self._label_for_state())
+        try:
+            self.btn.config(text=self._label_for_state())
+        except Exception:
+            pass
         self._apply_color()
 
 
@@ -836,7 +867,7 @@ def make_tray_image(level=None, charging=False, alert=False):
 
 
 # =========================================================
-# VENTANA DE ALERTA (80% / 20%) CON BOTÓN CERRAR
+# VENTANA DE ALERTA
 # =========================================================
 class AlertWindow:
 
@@ -929,17 +960,10 @@ class AlertWindow:
             zoom_mgr.register_widget(self.lbl_msg, "Sans Serif", 20, "normal")
             zoom_mgr.register_widget(self.status_label, "Sans Serif", 14, "normal")
             zoom_mgr.register_widget(self.btn_close, "Sans Serif", 18, "bold")
-            zoom_mgr.add_listener(self._refresh_from_zoom)
 
         self._sound_loop()
         self._check_loop()
         log.info(f"Alerta mostrada: {alert_type}")
-
-    def _refresh_from_zoom(self):
-        if not self.win.winfo_exists():
-            return
-        # El ZoomManager ya actualiza las fuentes registradas.
-        pass
 
     def _sound_loop(self):
         if not self._running or not self.win.winfo_exists():
@@ -984,7 +1008,7 @@ class AlertWindow:
         self.win.after(2000, self._check_loop)
 
     def _manual_close(self):
-        log.info(f"Alerta cerrada MANUALMENTE por el usuario: {self.alert_type}")
+        log.info(f"Alerta cerrada MANUALMENTE: {self.alert_type}")
         self._manual_closed = True
         if self.on_snooze:
             try:
@@ -1010,7 +1034,7 @@ class AlertWindow:
 
 
 # =========================================================
-# DIÁLOGO CUENTA ATRÁS DE APAGADO (con botón gigante STOP)
+# DIÁLOGO CUENTA ATRÁS APAGADO
 # =========================================================
 class ShutdownCountdownDialog:
 
@@ -1031,7 +1055,6 @@ class ShutdownCountdownDialog:
         self.win.resizable(False, False)
         self.win.configure(bg=COLOR_PANEL)
 
-        # Tamaño más generoso
         w, h = 720, 620
         self.win.update_idletasks()
         sw = self.win.winfo_screenwidth()
@@ -1042,7 +1065,6 @@ class ShutdownCountdownDialog:
         except Exception:
             pass
 
-        # Cabecera
         header = tk.Frame(self.win, bg=COLOR_DANGER, height=110)
         header.pack(fill="x")
         header.pack_propagate(False)
@@ -1071,7 +1093,6 @@ class ShutdownCountdownDialog:
                  fg=COLOR_MUTED, bg=COLOR_PANEL)
         self.lbl_secs.pack(pady=(0, 20))
 
-        # ----- BOTÓN GIGANTE DE STOP -----
         self.btn_stop = tk.Button(
             body,
             text="🛑  DETENER APAGADO  🛑",
@@ -1091,7 +1112,6 @@ class ShutdownCountdownDialog:
             fg=COLOR_MUTED, bg=COLOR_PANEL)
         self.lbl_hint.pack()
 
-        # Botón secundario (apagar ya)
         self.btn_now = tk.Button(
             body,
             text="⏻   Apagar YA",
@@ -1103,7 +1123,6 @@ class ShutdownCountdownDialog:
             command=self._confirm_now)
         self.btn_now.pack(pady=(20, 0))
 
-        # Registrar en ZoomManager
         if zoom_mgr:
             zoom_mgr.register_widget(self.lbl_head, "Sans Serif", 22, "bold")
             zoom_mgr.register_widget(self.lbl_info, "Sans Serif", 14, "normal")
@@ -1149,7 +1168,7 @@ class ShutdownCountdownDialog:
 
 
 # =========================================================
-# VENTANA DE INFORMACIÓN (PANTALLA COMPLETA, DASHBOARD)
+# VENTANA DE INFORMACIÓN (PANTALLA COMPLETA)
 # =========================================================
 class InfoWindow:
 
@@ -1159,7 +1178,6 @@ class InfoWindow:
         self.win.title(f"{APP_NAME} - Informe completo")
         self.win.configure(bg=COLOR_BG)
 
-        # Pantalla completa
         try:
             self.win.attributes("-fullscreen", True)
         except Exception:
@@ -1167,7 +1185,6 @@ class InfoWindow:
 
         self.win.bind("<Escape>", lambda e: self.win.destroy())
 
-        # ---- Header ----
         header = tk.Frame(self.win, bg=COLOR_BG, padx=24, pady=16)
         header.pack(fill="x")
 
@@ -1176,10 +1193,10 @@ class InfoWindow:
                                   bg=COLOR_BG, fg=COLOR_TEXT)
         self.lbl_title.pack(side="left")
 
-        # Botones zoom
         zbtns = tk.Frame(header, bg=COLOR_BG)
         zbtns.pack(side="right")
-        self.lbl_zoom = tk.Label(zbtns, text=f"{zoom_mgr.percent() if zoom_mgr else 100}%",
+        self.lbl_zoom = tk.Label(zbtns,
+                                 text=f"{zoom_mgr.percent() if zoom_mgr else 100}%",
                                  font=("Sans Serif", 12, "bold"),
                                  bg=COLOR_BG, fg=COLOR_TEXT)
         self.lbl_zoom.pack(side="right", padx=10)
@@ -1196,7 +1213,6 @@ class InfoWindow:
         _mk("A−", self._zoom_out).pack(side="right", padx=3)
         _mk("↺", self._zoom_reset).pack(side="right", padx=3)
 
-        # Botón cerrar
         tk.Button(header, text="✕  Cerrar  (Esc)",
                   font=("Sans Serif", 12, "bold"),
                   bg=COLOR_DANGER, fg="white",
@@ -1204,10 +1220,8 @@ class InfoWindow:
                   relief="flat", padx=18, pady=8, cursor="hand2",
                   command=self.win.destroy).pack(side="right", padx=(0, 20))
 
-        # Separador
         tk.Frame(self.win, bg=COLOR_BORDER, height=1).pack(fill="x")
 
-        # ---- Contenedor principal: 3 columnas ----
         cols = tk.Frame(self.win, bg=COLOR_BG, padx=20, pady=16)
         cols.pack(fill="both", expand=True)
         cols.columnconfigure(0, weight=1, uniform="col")
@@ -1215,10 +1229,9 @@ class InfoWindow:
         cols.columnconfigure(2, weight=1, uniform="col")
         cols.rowconfigure(0, weight=1)
 
-        # Guardar referencias a los labels que vamos a actualizar
         self.labels = {}
 
-        # ============ COLUMNA 1 ============
+        # Columna 1
         col1 = tk.Frame(cols, bg=COLOR_BG)
         col1.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
 
@@ -1241,7 +1254,7 @@ class InfoWindow:
             ("cycles", "—", "normal"),
         ])
 
-        # ============ COLUMNA 2 ============
+        # Columna 2
         col2 = tk.Frame(cols, bg=COLOR_BG)
         col2.grid(row=0, column=1, sticky="nsew", padx=10)
 
@@ -1262,7 +1275,7 @@ class InfoWindow:
             ("browser_mode", "—", "normal"),
         ])
 
-        # ============ COLUMNA 3 ============
+        # Columna 3
         col3 = tk.Frame(cols, bg=COLOR_BG)
         col3.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
 
@@ -1279,7 +1292,6 @@ class InfoWindow:
             ("app_version", f"{APP_NAME} v{APP_VERSION}", "normal"),
         ])
 
-        # Footer con botón actualizar
         footer = tk.Frame(self.win, bg=COLOR_BG, padx=20, pady=12)
         footer.pack(fill="x")
         tk.Button(footer, text="🔄  Actualizar datos",
@@ -1289,9 +1301,7 @@ class InfoWindow:
                   relief="flat", padx=20, pady=10, cursor="hand2",
                   command=self.refresh).pack(side="right")
 
-        # Registrar el zoom para todos los labels
         if zoom_mgr:
-            # Label de título y zoom
             zoom_mgr.register_widget(self.lbl_title, "Sans Serif", 22, "bold")
             zoom_mgr.register_widget(self.lbl_zoom, "Sans Serif", 12, "bold")
             zoom_mgr.add_listener(self._on_zoom_changed)
@@ -1299,28 +1309,22 @@ class InfoWindow:
         self.refresh()
 
     def _make_card(self, parent, title, rows):
-        """Crea una tarjeta con título y filas etiqueta/valor."""
         card = tk.Frame(parent, bg=COLOR_PANEL, highlightthickness=1,
                         highlightbackground=COLOR_BORDER)
         card.pack(fill="x", pady=(0, 14))
 
-        # Título de la tarjeta
         title_lbl = tk.Label(card, text=title, font=("Sans Serif", 14, "bold"),
                              bg=COLOR_PANEL, fg=COLOR_PRIMARY, anchor="w",
                              padx=14, pady=10)
         title_lbl.pack(fill="x")
-
-        # Separador
         tk.Frame(card, bg=COLOR_BORDER, height=1).pack(fill="x")
 
-        # Filas
         grid = tk.Frame(card, bg=COLOR_PANEL, padx=14, pady=10)
         grid.pack(fill="x")
         grid.columnconfigure(0, weight=0)
         grid.columnconfigure(1, weight=1)
 
         for i, (key, _val, kind) in enumerate(rows):
-            # Etiqueta
             label_widget = tk.Label(
                 grid,
                 text=self._pretty_label(key),
@@ -1328,7 +1332,6 @@ class InfoWindow:
                 bg=COLOR_PANEL, fg=COLOR_MUTED, anchor="w")
             label_widget.grid(row=i, column=0, sticky="w", padx=(0, 10), pady=4)
 
-            # Valor
             if kind == "big":
                 val_lbl = tk.Label(grid, text="—",
                                    font=("Sans Serif", 32, "bold"),
@@ -1342,7 +1345,6 @@ class InfoWindow:
 
             self.labels[key] = val_lbl
 
-            # Registrar en ZoomManager
             if self.zoom_mgr:
                 if kind == "big":
                     self.zoom_mgr.register_widget(val_lbl, "Sans Serif", 32, "bold")
@@ -1350,7 +1352,6 @@ class InfoWindow:
                     self.zoom_mgr.register_widget(val_lbl, "Sans Serif", 11, "normal")
                 self.zoom_mgr.register_widget(label_widget, "Sans Serif", 10, "normal")
 
-        # Registrar título
         if self.zoom_mgr:
             self.zoom_mgr.register_widget(title_lbl, "Sans Serif", 14, "bold")
 
@@ -1422,7 +1423,6 @@ class InfoWindow:
         sudoers_ok = check_sudoers_configured()
         browser = get_browser_status()
 
-        # Función auxiliar
         def fnum(v, unidad="", dec=2):
             if v is None:
                 return "No disponible"
@@ -1431,7 +1431,6 @@ class InfoWindow:
         def fbool(v):
             return "✅ SÍ" if v else "❌ No"
 
-        # Actualizar labels
         estado_map = {
             "charging": "🔌 Cargando",
             "discharging": "🔋 Descargando",
@@ -1442,7 +1441,6 @@ class InfoWindow:
         }
 
         try:
-            # Nivel grande con color
             pct = info["percentage"]
             if pct is None:
                 self.labels["level_big"].config(text="—", fg=COLOR_TEXT)
@@ -1470,8 +1468,7 @@ class InfoWindow:
             self.labels["capacity"].config(text=fnum(info["capacity"], "%"))
             cap = info.get("capacity")
             if cap is None:
-                diag = "—"
-                color = COLOR_MUTED
+                diag, color = "—", COLOR_MUTED
             elif cap >= 90:
                 diag, color = "🟢 Excelente", COLOR_SUCCESS
             elif cap >= 80:
@@ -1515,9 +1512,8 @@ class InfoWindow:
             self.labels["sudoers"].config(
                 text="✅ configurado" if sudoers_ok else "❌ NO configurado",
                 fg=COLOR_SUCCESS if sudoers_ok else COLOR_DANGER)
-            self.labels["shutdown_enabled"].config(
-                text=fbool(self.zoom_mgr is not None and
-                           get_vault_config_value("auto_shutdown_enabled")))
+            shutdown_enabled = bool(get_vault_config_value("auto_shutdown_enabled"))
+            self.labels["shutdown_enabled"].config(text=fbool(shutdown_enabled))
             shutdown_min = get_vault_config_value("auto_shutdown_minutes") or 10
             self.labels["shutdown_minutes"].config(text=f"{shutdown_min} min")
             self.labels["browser_mode"].config(
@@ -1622,12 +1618,21 @@ class AutoShutdownManager:
             self._dialog_active = False
 
     def _do_shutdown(self):
+        """Apaga el equipo. PRIMERO usa 'systemctl poweroff'."""
         methods = [
+            # 1) systemctl poweroff (usa polkit, sin sudo)
+            ["systemctl", "poweroff"],
+            # 2) systemctl poweroff con sudo sin contraseña
+            ["sudo", "-n", "systemctl", "poweroff"],
+            # 3) systemctl con --force
+            ["sudo", "-n", "systemctl", "poweroff", "--force", "--force"],
+            # 4) poweroff directo (con sudoers configurado)
             ["sudo", "-n", "/usr/sbin/poweroff", "--force", "--force"],
+            # 5) poweroff ruta alternativa
             ["sudo", "-n", "/sbin/poweroff", "--force", "--force"],
-            ["sudo", "-n", "poweroff", "--force", "--force"],
+            # 6) pkexec (pide contraseña gráfica)
             ["pkexec", "poweroff", "--force", "--force"],
-            ["systemctl", "poweroff", "--force", "--force"],
+            # 7) shutdown fallback
             ["shutdown", "-h", "now"],
         ]
         for i, cmd in enumerate(methods, 1):
@@ -1637,10 +1642,16 @@ class AutoShutdownManager:
                                      stderr=subprocess.PIPE,
                                      timeout=10, text=True)
                 if res.returncode == 0:
-                    log.warning(f"AutoShutdown: apagado con {' '.join(cmd)}")
+                    log.warning(f"AutoShutdown: apagado iniciado con {' '.join(cmd)}")
                     return
                 err = res.stderr.strip() if res.stderr else ""
-                log.warning(f"AutoShutdown: método {i} falló: {err}")
+                log.warning(f"AutoShutdown: método {i} falló (rc={res.returncode}): {err}")
+            except FileNotFoundError:
+                log.warning(f"AutoShutdown: comando no encontrado: {cmd[0]}")
+                continue
+            except subprocess.TimeoutExpired:
+                log.warning(f"AutoShutdown: timeout con {' '.join(cmd)}")
+                continue
             except Exception as e:
                 log.warning(f"AutoShutdown: error con {cmd[0]}: {e}")
                 continue
@@ -1699,10 +1710,16 @@ class TrayIcon:
     def _on_zoom_reset(self, i=None, it=None): self.app.root.after(0, self.app.zoom_reset)
     def _on_quit(self, i=None, it=None): self.app.root.after(0, self.app.ask_quit)
 
+    def _run_safe(self):
+        try:
+            self.icon.run()
+        except Exception as e:
+            log.error(f"Tray icon thread crashed: {e}\n{traceback.format_exc()}")
+
     def start(self):
         if self.icon is None:
             return
-        self._thread = threading.Thread(target=self.icon.run, daemon=True,
+        self._thread = threading.Thread(target=self._run_safe, daemon=True,
                                         name="tray-icon")
         self._thread.start()
         log.info("Icono de bandeja iniciado")
@@ -1737,10 +1754,10 @@ class TrayIcon:
 class BatteryGuardianApp:
 
     def __init__(self, root: tk.Tk, start_hidden: bool = False):
+        log.info("BatteryGuardianApp: __init__ inicio")
         self.root = root
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
 
-        # Calcular tamaño óptimo según pantalla
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
@@ -1752,6 +1769,7 @@ class BatteryGuardianApp:
         self.root.minsize(1000, 620)
         self.root.resizable(True, True)
 
+        log.info("Cargando configuración...")
         self.config = load_config()
         self.alert_active = False
         self.alert_window = None
@@ -1760,18 +1778,28 @@ class BatteryGuardianApp:
         self._force_quit = False
         self._start_hidden = start_hidden
         self._snooze_until = {"connect": 0, "disconnect": 0}
-        self._toggle_buttons = []  # referencia a los toggle buttons
+        self._toggle_buttons = []
 
+        log.info("Aplicando estilos...")
         style = apply_modern_styles(root)
         self.zoom_mgr = ZoomManager(root, style, self.config.get("zoom", 1.0))
 
+        log.info("Construyendo UI...")
         self._build_ui()
+
+        log.info("Aplicando zoom...")
         self.zoom_mgr.apply()
 
+        log.info("Iniciando bandeja...")
         self._setup_tray()
+
+        log.info("Bindings de zoom...")
         self._bind_zoom_keys()
+
+        log.info("Programando chequeo de batería...")
         self._schedule_check(1000)
 
+        log.info("Iniciando AutoShutdownManager...")
         self.auto_shutdown = AutoShutdownManager(self)
         if self.config.get("auto_shutdown_enabled", False):
             self.auto_shutdown.start()
@@ -1780,6 +1808,8 @@ class BatteryGuardianApp:
 
         if start_hidden:
             self.root.after(500, self.hide_window)
+
+        log.info("BatteryGuardianApp: __init__ OK")
 
     def _setup_tray(self):
         self.tray = TrayIcon(self)
@@ -1795,23 +1825,12 @@ class BatteryGuardianApp:
         if self.config.get("auto_shutdown_enabled", False):
             if not check_sudoers_configured():
                 log.warning("Auto-apagado activado pero sudoers NO configurado")
-                self.root.after(1500, lambda: messagebox.showwarning(
-                    APP_NAME,
-                    "El auto-apagado está ACTIVADO pero el archivo sudoers\n"
-                    "NO está configurado. El equipo NO se apagará.\n\n"
-                    "Ejecuta:\n"
-                    "  sudo bash -c 'echo \"$USER ALL=(ALL) NOPASSWD: "
-                    "/usr/sbin/poweroff\" > /etc/sudoers.d/battery-guardian'\n"
-                    "  sudo chmod 0440 /etc/sudoers.d/battery-guardian"))
 
-    # =====================================================
-    # UI principal
-    # =====================================================
     def _build_ui(self):
         root = self.root
         root.configure(bg=COLOR_BG)
 
-        # ---- HEADER ----
+        # Header
         header = tk.Frame(root, bg=COLOR_BG, padx=18, pady=12)
         header.pack(fill="x")
 
@@ -1829,7 +1848,6 @@ class BatteryGuardianApp:
         self.lbl_sub.pack(side="left", padx=(14, 0), pady=(8, 0))
         self.zoom_mgr.register_widget(self.lbl_sub, "Sans Serif", 9, "italic")
 
-        # Botones de zoom en el header
         zbtns = tk.Frame(header, bg=COLOR_BG)
         zbtns.pack(side="right")
 
@@ -1854,10 +1872,9 @@ class BatteryGuardianApp:
         _mk_zoom_btn("A−", self.zoom_out)
         _mk_zoom_btn("↺", self.zoom_reset)
 
-        # Separador
         tk.Frame(root, bg=COLOR_BORDER, height=1).pack(fill="x")
 
-        # ---- 3 COLUMNAS ----
+        # 3 columnas
         cols = tk.Frame(root, bg=COLOR_BG, padx=18, pady=12)
         cols.pack(fill="both", expand=True)
         cols.columnconfigure(0, weight=1, uniform="col")
@@ -1865,11 +1882,10 @@ class BatteryGuardianApp:
         cols.columnconfigure(2, weight=1, uniform="col")
         cols.rowconfigure(0, weight=1)
 
-        # ============ COLUMNA 1 ============
+        # Columna 1
         col1 = tk.Frame(cols, bg=COLOR_BG)
         col1.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
-        # --- Tarjeta: Estado de la batería ---
         card_status = ttk.LabelFrame(col1, text="  🔋 Estado de la batería  ",
                                      style="Card.TLabelframe")
         card_status.pack(fill="x", pady=(0, 10))
@@ -1894,7 +1910,6 @@ class BatteryGuardianApp:
                                     style="Info.TLabel")
         self.lbl_cycles.pack(anchor="w", pady=1)
 
-        # --- Tarjeta: Límites ---
         card_lim = ttk.LabelFrame(col1, text="  ⚙️ Límites de carga  ",
                                   style="Card.TLabelframe")
         card_lim.pack(fill="x", pady=(0, 10))
@@ -1921,7 +1936,6 @@ class BatteryGuardianApp:
         sp_min.bind("<FocusOut>", lambda e: self._save())
         sp_min.bind("<Return>", lambda e: self._save())
 
-        # --- Tarjeta: Control de monitoreo con TOGGLE BUTTONS ---
         card_ctrl = ttk.LabelFrame(col1, text="  🎛️ Control de monitoreo  ",
                                    style="Card.TLabelframe")
         card_ctrl.pack(fill="x")
@@ -1962,7 +1976,7 @@ class BatteryGuardianApp:
         self.tb_fullscreen.pack(fill="x", pady=3)
         self._toggle_buttons.append(self.tb_fullscreen)
 
-        # ============ COLUMNA 2 ============
+        # Columna 2
         col2 = tk.Frame(cols, bg=COLOR_BG)
         col2.grid(row=0, column=1, sticky="nsew", padx=8)
 
@@ -2056,7 +2070,7 @@ class BatteryGuardianApp:
                    command=self._test_shutdown_warning).pack(anchor="w",
                                                              pady=(4, 0))
 
-        # ============ COLUMNA 3 ============
+        # Columna 3
         col3 = tk.Frame(cols, bg=COLOR_BG)
         col3.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
 
@@ -2096,14 +2110,11 @@ class BatteryGuardianApp:
                   text=f"{APP_NAME}\nVersión {APP_VERSION}\n\n"
                        "Cuida la salud de la batería de tu\n"
                        "portátil manteniéndola entre los\n"
-                       "límites configurados.\n\n"
-                       "Los avisos de 80% y 20% se pueden\n"
-                       "cerrar manualmente si ya realizaste\n"
-                       "la acción.",
+                       "límites configurados.",
                   style="Muted.TLabel", justify="left"
                   ).pack(anchor="w", pady=2)
 
-        # ---- FOOTER ----
+        # Footer
         footer = tk.Frame(root, bg=COLOR_BG, padx=18, pady=8)
         footer.pack(fill="x")
 
@@ -2124,9 +2135,7 @@ class BatteryGuardianApp:
                   relief="flat", padx=14, pady=6, cursor="hand2",
                   command=self.ask_quit).pack(side="right")
 
-        # Aviso de zoom (label que se actualiza)
         self.zoom_mgr.add_listener(self._update_zoom_label)
-
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_x)
 
     def _update_zoom_label(self):
@@ -2135,7 +2144,6 @@ class BatteryGuardianApp:
         except tk.TclError:
             pass
 
-    # ----- Ventana: acciones públicas -----
     def show_window(self):
         try:
             self.root.deiconify()
@@ -2207,7 +2215,6 @@ class BatteryGuardianApp:
         except Exception:
             pass
 
-    # ----- Zoom -----
     def zoom_in(self):
         self.zoom_mgr.zoom_in()
         self._persist_zoom()
@@ -2224,7 +2231,6 @@ class BatteryGuardianApp:
         self.config["zoom"] = self.zoom_mgr.zoom
         save_config(self.config)
 
-    # ----- Callbacks UI -----
     def _on_toggle_check(self):
         self.config["enabled"] = self.enabled_var.get()
         save_config(self.config)
@@ -2302,118 +2308,120 @@ class BatteryGuardianApp:
         self._snooze_until[alert_type] = time.time() + minutes * 60
         log.info(f"Snooze {alert_type} durante {minutes} min")
 
-    # ----- Bucle de chequeo -----
     def _schedule_check(self, delay_ms):
         self.root.after(delay_ms, self._check_battery)
 
     def _check_battery(self):
-        info = get_battery_full_info()
-        state = info["state"]
-        level = info["percentage"]
-        charging = state in ("charging", "fully-charged", "pending-charge")
+        try:
+            info = get_battery_full_info()
+            state = info["state"]
+            level = info["percentage"]
+            charging = state in ("charging", "fully-charged", "pending-charge")
 
-        if state is None or level is None:
-            self.lbl_level.config(text="—", style="BigVal.TLabel")
-            self.lbl_state.config(text="Estado: ⚠ No se detectó batería")
-            self.lbl_energy_full.config(text="energy-full: —")
-            self.lbl_capacity.config(text="capacity (salud): —")
-            self.lbl_cycles.config(text="charge-cycles: —")
-        else:
-            if level <= 20:
-                style_lvl = "BigDanger.TLabel"
-            elif level <= 40:
-                style_lvl = "BigWarn.TLabel"
+            if state is None or level is None:
+                self.lbl_level.config(text="—", style="BigVal.TLabel")
+                self.lbl_state.config(text="Estado: ⚠ No se detectó batería")
+                self.lbl_energy_full.config(text="energy-full: —")
+                self.lbl_capacity.config(text="capacity (salud): —")
+                self.lbl_cycles.config(text="charge-cycles: —")
             else:
-                style_lvl = "BigOk.TLabel"
-            self.lbl_level.config(text=f"{level}%", style=style_lvl)
+                if level <= 20:
+                    style_lvl = "BigDanger.TLabel"
+                elif level <= 40:
+                    style_lvl = "BigWarn.TLabel"
+                else:
+                    style_lvl = "BigOk.TLabel"
+                self.lbl_level.config(text=f"{level}%", style=style_lvl)
 
-            estado_map = {
-                "charging": "🔌 Cargando",
-                "discharging": "🔋 Descargando",
-                "fully-charged": "✅ Completamente cargada",
-                "pending-charge": "⏳ Pendiente de carga",
-                "pending-discharge": "⏳ Pendiente de descarga",
-                "unknown": "❓ Desconocido",
-            }
-            self.lbl_state.config(text=f"Estado: {estado_map.get(state, state)}")
-            if info["energy_full"] is not None:
-                self.lbl_energy_full.config(
-                    text=f"energy-full: {info['energy_full']:.2f} Wh")
+                estado_map = {
+                    "charging": "🔌 Cargando",
+                    "discharging": "🔋 Descargando",
+                    "fully-charged": "✅ Completamente cargada",
+                    "pending-charge": "⏳ Pendiente de carga",
+                    "pending-discharge": "⏳ Pendiente de descarga",
+                    "unknown": "❓ Desconocido",
+                }
+                self.lbl_state.config(text=f"Estado: {estado_map.get(state, state)}")
+                if info["energy_full"] is not None:
+                    self.lbl_energy_full.config(
+                        text=f"energy-full: {info['energy_full']:.2f} Wh")
+                else:
+                    self.lbl_energy_full.config(text="energy-full: No disponible")
+                if info["capacity"] is not None:
+                    self.lbl_capacity.config(
+                        text=f"capacity (salud): {info['capacity']:.2f} %")
+                else:
+                    self.lbl_capacity.config(text="capacity (salud): No disponible")
+                if info["charge_cycles"] is not None:
+                    self.lbl_cycles.config(
+                        text=f"charge-cycles: {info['charge_cycles']}")
+                else:
+                    self.lbl_cycles.config(
+                        text="charge-cycles: No reportado por el hardware")
+
+            idle = get_idle_seconds()
+            if idle >= 0:
+                self.lbl_idle.config(
+                    text=f"Inactividad: {int(idle // 60)} min {int(idle % 60)} s")
             else:
-                self.lbl_energy_full.config(text="energy-full: No disponible")
-            if info["capacity"] is not None:
-                self.lbl_capacity.config(
-                    text=f"capacity (salud): {info['capacity']:.2f} %")
+                self.lbl_idle.config(text="Inactividad: no disponible")
+
+            media = is_multimedia_playing()
+            media_extra = ""
+            if is_media_player_running():
+                media_extra = " + reproductor (VLC/mpv)"
+            if media:
+                self.lbl_media.config(
+                    text=f"Multimedia: 🎵 activa{media_extra}",
+                    style="Ok.TLabel")
             else:
-                self.lbl_capacity.config(text="capacity (salud): No disponible")
-            if info["charge_cycles"] is not None:
-                self.lbl_cycles.config(
-                    text=f"charge-cycles: {info['charge_cycles']}")
+                self.lbl_media.config(
+                    text="Multimedia: 🔇 silencio", style="Muted.TLabel")
+
+            browser = get_browser_status()
+            if not _cmd_exists("xdotool"):
+                self.lbl_browser.config(
+                    text="Navegador: ⚠ xdotool no instalado",
+                    style="Warn.TLabel")
+            elif browser.get("in_use"):
+                reason = browser['reason'][:40]
+                self.lbl_browser.config(
+                    text=f"Navegador: 🌐 EN USO ({reason})",
+                    style="Ok.TLabel")
             else:
-                self.lbl_cycles.config(
-                    text="charge-cycles: No reportado por el hardware")
+                self.lbl_browser.config(
+                    text="Navegador: ❌ no detectado",
+                    style="Muted.TLabel")
 
-        idle = get_idle_seconds()
-        if idle >= 0:
-            self.lbl_idle.config(
-                text=f"Inactividad: {int(idle // 60)} min {int(idle % 60)} s")
-        else:
-            self.lbl_idle.config(text="Inactividad: no disponible")
+            sudoers_ok = check_sudoers_configured()
+            if sudoers_ok:
+                self.lbl_sudoers.config(
+                    text="Sudoers: ✅ configurado", style="Ok.TLabel")
+            else:
+                self.lbl_sudoers.config(
+                    text="Sudoers: ❌ NO configurado", style="Warn.TLabel")
 
-        media = is_multimedia_playing()
-        media_extra = ""
-        if is_media_player_running():
-            media_extra = " + reproductor (VLC/mpv)"
-        if media:
-            self.lbl_media.config(
-                text=f"Multimedia: 🎵 activa{media_extra}",
-                style="Ok.TLabel")
-        else:
-            self.lbl_media.config(
-                text="Multimedia: 🔇 silencio", style="Muted.TLabel")
+            if self.tray:
+                self.tray.update(level=level, charging=charging,
+                                 alert=self.alert_active)
 
-        browser = get_browser_status()
-        if not _cmd_exists("xdotool"):
-            self.lbl_browser.config(
-                text="Navegador: ⚠ xdotool no instalado",
-                style="Warn.TLabel")
-        elif browser.get("in_use"):
-            reason = browser['reason'][:40]
-            self.lbl_browser.config(
-                text=f"Navegador: 🌐 EN USO ({reason})",
-                style="Ok.TLabel")
-        else:
-            self.lbl_browser.config(
-                text="Navegador: ❌ no detectado",
-                style="Muted.TLabel")
+            now = time.time()
+            if (self.config["enabled"]
+                    and not self.alert_active
+                    and state is not None
+                    and level is not None
+                    and now >= self._paused_until):
 
-        sudoers_ok = check_sudoers_configured()
-        if sudoers_ok:
-            self.lbl_sudoers.config(
-                text="Sudoers: ✅ configurado", style="Ok.TLabel")
-        else:
-            self.lbl_sudoers.config(
-                text="Sudoers: ❌ NO configurado", style="Warn.TLabel")
-
-        if self.tray:
-            self.tray.update(level=level, charging=charging,
-                             alert=self.alert_active)
-
-        now = time.time()
-        if (self.config["enabled"]
-                and not self.alert_active
-                and state is not None
-                and level is not None
-                and now >= self._paused_until):
-
-            if state in ("charging", "fully-charged", "pending-charge") and \
-               level >= self.config["max_charge"]:
-                if now >= self._snooze_until.get("disconnect", 0):
-                    self._show_alert("disconnect")
-            elif state in ("discharging", "pending-discharge") and \
-                 level <= self.config["min_charge"]:
-                if now >= self._snooze_until.get("connect", 0):
-                    self._show_alert("connect")
+                if state in ("charging", "fully-charged", "pending-charge") and \
+                   level >= self.config["max_charge"]:
+                    if now >= self._snooze_until.get("disconnect", 0):
+                        self._show_alert("disconnect")
+                elif state in ("discharging", "pending-discharge") and \
+                     level <= self.config["min_charge"]:
+                    if now >= self._snooze_until.get("connect", 0):
+                        self._show_alert("connect")
+        except Exception as e:
+            log.error(f"Error en _check_battery: {e}\n{traceback.format_exc()}")
 
         self._schedule_check(self.config["check_interval"] * 1000)
 
@@ -2451,20 +2459,13 @@ def print_info_cli():
     print(f"  Nivel:              {info['percentage']}%")
     print(f"  capacity (salud):   {info['capacity']}%")
     print(f"  charge-cycles:      {info['charge_cycles']}")
-    print(f"  Voltaje:            {info['voltage']} V")
-    print(f"  Temperatura:        {info['temperature']} °C")
     print("-" * 60)
     if idle >= 0:
         print(f"  Inactividad:        {int(idle // 60)} min {int(idle % 60)} s")
-    else:
-        print(f"  Inactividad:        no disponible")
     print(f"  Multimedia activa:  {'SÍ' if media else 'No'}")
-    print(f"  Reproductor activo: {'SÍ' if is_media_player_running() else 'No'}")
-    print(f"  Ventana media:      {'SÍ' if is_media_player_window_visible() else 'No'}")
     print(f"  Navegador en uso:   {'SÍ' if browser.get('in_use') else 'No'}")
-    if browser.get("reason"):
-        print(f"      Motivo:         {browser['reason']}")
     print(f"  Sudoers:            {'OK' if sudoers_ok else 'NO CONFIGURADO'}")
+    print(f"  TRAY_AVAILABLE:     {TRAY_AVAILABLE}")
     print("=" * 60)
 
 
@@ -2472,27 +2473,67 @@ def print_info_cli():
 # MAIN
 # =========================================================
 def main():
-    setup_logging()
+    try:
+        setup_logging()
+        install_excepthooks()
+    except Exception as e:
+        print(f"Error inicializando logging: {e}")
 
     if "--info" in sys.argv:
         print_info_cli()
         return
 
+    debug = "--debug" in sys.argv
     start_hidden = "--hidden" in sys.argv
-    log.info(f"Iniciando {APP_NAME} v{APP_VERSION} "
-             f"(hidden={start_hidden}, systemd={is_running_under_systemd()})")
 
+    log.info(f"Iniciando {APP_NAME} v{APP_VERSION} "
+             f"(hidden={start_hidden}, debug={debug}, "
+             f"systemd={is_running_under_systemd()}, "
+             f"DISPLAY={os.environ.get('DISPLAY', 'NO')})")
+
+    # Comprobar entorno
+    if not os.environ.get("DISPLAY"):
+        msg = ("No hay DISPLAY. El programa no puede abrir una ventana.\n"
+               "Asegúrate de ejecutarlo desde una sesión gráfica.")
+        log.error(msg)
+        print(f"ERROR: {msg}")
+        if not debug:
+            sys.exit(1)
+
+    # Crear ventana
     try:
         root = tk.Tk()
     except tk.TclError as e:
-        print(f"Error: no se pudo iniciar la interfaz gráfica ({e})")
+        msg = f"Error al crear ventana Tk: {e}"
+        log.error(msg)
+        print(f"ERROR: {msg}")
+        sys.exit(1)
+    except Exception as e:
+        msg = f"Error inesperado al crear Tk: {e}"
+        log.error(msg + "\n" + traceback.format_exc())
+        print(f"ERROR: {msg}")
         sys.exit(1)
 
-    app = BatteryGuardianApp(root, start_hidden=start_hidden)
+    # Crear aplicación
+    try:
+        app = BatteryGuardianApp(root, start_hidden=start_hidden)
+    except Exception as e:
+        tb = traceback.format_exc()
+        log.error(f"Error creando BatteryGuardianApp:\n{tb}")
+        print(f"ERROR CRÍTICO:\n{tb}")
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        sys.exit(1)
+
+    # Mainloop
     try:
         root.mainloop()
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        log.error(f"Error en mainloop: {e}\n{traceback.format_exc()}")
     finally:
         try:
             app.auto_shutdown.stop()
