@@ -145,7 +145,11 @@ systemctl --user disable --now battery-guardian.service
 
 # Volver a activarlo
 systemctl --user enable --now battery-guardian.service
-🗑️ Desinstalación
+
+---
+
+## 🗑️ Desinstalación
+
 Paso 1 — Ir al proyecto
 bash
 cd "/home/asus/Documentos/INFORMATICA/PROGRAMACIÓN/PROYECTOS/Battery_Guardian"
@@ -210,14 +214,4 @@ bash
 cd "/home/asus/Documentos/INFORMATICA/PROGRAMACIÓN/PROYECTOS/Battery_Guardian"
 ./uninstall.sh          # responde "s" para borrar también la config
 ./install.sh
-📝 Notas finales
-El programa no se cierra con la X: se oculta en la bandeja.
 
-Para salir de verdad: clic derecho en el icono → Salir.
-
-Configuración: ~/.config/battery_guardian/config.json
-
-Logs: ~/.config/battery_guardian/battery_guardian.log
-
-El venv no toca el Python del sistema.
-EOF
