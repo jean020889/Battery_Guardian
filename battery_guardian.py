@@ -1416,7 +1416,7 @@ class BatteryGuardianApp:
         self.root = root
         self.root.title(APP_NAME)
         self.root.geometry("660x1160")
-        self.root.minsize(600, 760)
+        self.root.minsize(660, 1160)
         self.root.resizable(True, True)
         self.config = load_config()
         self.alert_active = False
