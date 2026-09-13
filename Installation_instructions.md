@@ -56,7 +56,7 @@ cd "/home/asus/Documentos/INFORMATICA/PROGRAMACIÓN/PROYECTOS/Battery_Guardian"
 Paso 2 — Ejecutar el instalador
 
 ```bash
-chmod +x install.sh uninstall.sh
+chmod +x install.sh
 ./install.sh
 ```
 Paso 3 — Esperar a que termine
