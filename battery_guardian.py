@@ -2,9 +2,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Battery Guardian v2.2.9
-=======================
+Battery Guardian v2.2.10
+========================
 Cuida la salud de la batería de tu portátil Linux.
+
+NOVEDADES v2.2.10:
+- Al cerrar una alerta (batería o apagado), la ventana principal
+  NO se abre. El programa permanece oculto en la bandeja del sistema.
+- Se recuerda si la ventana principal estaba oculta antes de mostrar
+  una alerta, para restaurar exactamente ese estado al cerrarla.
+- Se mantiene TODA la funcionalidad anterior sin eliminar nada.
 
 NOVEDADES v2.2.9:
 - Apagado: usa 'systemctl poweroff' como PRIMER método.
@@ -43,7 +50,7 @@ except ImportError as _e:
 # CONSTANTES
 # =========================================================
 APP_NAME = "Battery Guardian"
-APP_VERSION = "2.2.9"
+APP_VERSION = "2.2.10"
 SYSTEMD_SERVICE = "battery-guardian.service"
 SUDOERS_FILE = "/etc/sudoers.d/battery-guardian"
 POWEROFF_PATH = "/usr/sbin/poweroff"
@@ -656,7 +663,6 @@ class ZoomManager:
         self._listeners.append(cb)
 
     def apply(self) -> None:
-        # 1) Estilos ttk
         for style_name, (family, base, weight) in self.BASE_STYLE_FONTS.items():
             try:
                 self.style.configure(style_name,
@@ -664,7 +670,6 @@ class ZoomManager:
             except Exception:
                 pass
 
-        # 2) Widgets tk registrados
         alive = []
         for widget, family, base, weight in self._widget_fonts:
             try:
@@ -674,7 +679,6 @@ class ZoomManager:
                 pass
         self._widget_fonts = alive
 
-        # 3) Listeners
         for cb in self._listeners:
             try:
                 cb()
@@ -1603,6 +1607,8 @@ class AutoShutdownManager:
 
     def _run_dialog(self, idle_s, warn_s):
         try:
+            # v2.2.10: recordar si la ventana principal estaba oculta
+            was_hidden = self.app._is_root_hidden()
             dlg = ShutdownCountdownDialog(
                 self.app.root, warn_s, idle_s / 60.0, self.app.zoom_mgr)
             self.app.root.wait_window(dlg.win)
@@ -1612,6 +1618,12 @@ class AutoShutdownManager:
             elif dlg.cancelled:
                 self._warning_until = time.time() + 60
                 log.info("AutoShutdown cancelado por el usuario")
+            # v2.2.10: si la ventana principal estaba oculta, mantenerla oculta
+            if was_hidden:
+                try:
+                    self.app.root.withdraw()
+                except Exception:
+                    pass
         except Exception as e:
             log.error(f"Error en diálogo de apagado: {e}")
         finally:
@@ -1780,6 +1792,9 @@ class BatteryGuardianApp:
         self._snooze_until = {"connect": 0, "disconnect": 0}
         self._toggle_buttons = []
 
+        # v2.2.10: recordar estado de visibilidad de la ventana principal
+        self._root_was_hidden_before_alert = False
+
         log.info("Aplicando estilos...")
         style = apply_modern_styles(root)
         self.zoom_mgr = ZoomManager(root, style, self.config.get("zoom", 1.0))
@@ -1810,6 +1825,34 @@ class BatteryGuardianApp:
             self.root.after(500, self.hide_window)
 
         log.info("BatteryGuardianApp: __init__ OK")
+
+    # ----- v2.2.10: Nuevos helpers de visibilidad -----
+    def _is_root_hidden(self) -> bool:
+        """Devuelve True si la ventana principal está oculta."""
+        try:
+            return self.root.state() == "withdrawn"
+        except Exception:
+            return False
+
+    def _save_visibility_before_alert(self):
+        """Guarda el estado actual de visibilidad antes de mostrar una alerta."""
+        try:
+            self._root_was_hidden_before_alert = self._is_root_hidden()
+            log.info(f"Visibilidad guardada antes de alerta: "
+                     f"hidden={self._root_was_hidden_before_alert}")
+        except Exception:
+            self._root_was_hidden_before_alert = False
+
+    def _restore_visibility_after_alert(self):
+        """Restaura la visibilidad que había antes de la alerta."""
+        try:
+            if self._root_was_hidden_before_alert:
+                # Estaba oculta → volver a ocultarla
+                self.root.withdraw()
+                log.info("Ventana principal restaurada a OCULTA tras alerta")
+            # Si estaba visible, la dejamos visible
+        except Exception as e:
+            log.error(f"Error restaurando visibilidad: {e}")
 
     def _setup_tray(self):
         self.tray = TrayIcon(self)
@@ -2244,8 +2287,12 @@ class BatteryGuardianApp:
             self.auto_shutdown.stop()
 
     def _test_shutdown_warning(self):
+        # v2.2.10: guardar visibilidad antes de la alerta
+        self._save_visibility_before_alert()
         dlg = ShutdownCountdownDialog(self.root, 15, 10.0, self.zoom_mgr)
         self.root.wait_window(dlg.win)
+        # v2.2.10: restaurar visibilidad después de la alerta
+        self._restore_visibility_after_alert()
         if dlg.confirmed:
             messagebox.showinfo(APP_NAME,
                 "Prueba finalizada.\n\n"
@@ -2426,11 +2473,19 @@ class BatteryGuardianApp:
         self._schedule_check(self.config["check_interval"] * 1000)
 
     def _show_alert(self, alert_type):
+        # v2.2.10: guardar visibilidad actual antes de mostrar la alerta
+        self._save_visibility_before_alert()
+
         self.alert_active = True
+        # v2.2.10: NO hacer deiconify() de la ventana principal.
+        # La ventana de alerta (Toplevel) ya se muestra por sí sola con
+        # sus propias propiedades (topmost, fullscreen si aplica).
+        # Así el usuario no ve la ventana principal abrirse por detrás.
         try:
-            self.root.deiconify()
+            log.info(f"Mostrando alerta {alert_type} sin abrir la ventana principal")
         except Exception:
             pass
+
         self.alert_window = AlertWindow(
             self.root, self.config, alert_type,
             self._alert_resolved, self.zoom_mgr,
@@ -2440,6 +2495,8 @@ class BatteryGuardianApp:
         self.alert_active = False
         self.alert_window = None
         self._paused_until = time.time() + 5
+        # v2.2.10: restaurar visibilidad que había antes de la alerta
+        self._restore_visibility_after_alert()
 
 
 # =========================================================
@@ -2491,7 +2548,6 @@ def main():
              f"systemd={is_running_under_systemd()}, "
              f"DISPLAY={os.environ.get('DISPLAY', 'NO')})")
 
-    # Comprobar entorno
     if not os.environ.get("DISPLAY"):
         msg = ("No hay DISPLAY. El programa no puede abrir una ventana.\n"
                "Asegúrate de ejecutarlo desde una sesión gráfica.")
@@ -2500,7 +2556,6 @@ def main():
         if not debug:
             sys.exit(1)
 
-    # Crear ventana
     try:
         root = tk.Tk()
     except tk.TclError as e:
@@ -2514,7 +2569,6 @@ def main():
         print(f"ERROR: {msg}")
         sys.exit(1)
 
-    # Crear aplicación
     try:
         app = BatteryGuardianApp(root, start_hidden=start_hidden)
     except Exception as e:
@@ -2527,7 +2581,6 @@ def main():
             pass
         sys.exit(1)
 
-    # Mainloop
     try:
         root.mainloop()
     except KeyboardInterrupt:
@@ -2548,3 +2601,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
