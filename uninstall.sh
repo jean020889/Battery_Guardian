@@ -1,34 +1,11 @@
 
-
 #!/bin/bash
 # =========================================================
-#  Battery Guardian - Desinstalador v2.2.9
+#  Battery Guardian - Desinstalador
+#  Elimina SOLO lo que instaló install.sh
 # =========================================================
-#  Elimina TODO lo que install.sh instaló, incluyendo:
-#      - Servicio systemd --user
-#      - Procesos activos
-#      - Archivo sudoers
-#      - Icono del escritorio
-#      - Entrada del menú de aplicaciones
-#      - Autostart (si existía)
-#      - Enlace CLI en ~/.local/bin
-#      - Carpeta de instalación completa (venv + código)
-#      - Configuración del usuario (opcional, pregunta)
-# =========================================================
+set -e
 
-APP_NAME="Battery Guardian"
-APP_SLUG="battery-guardian"
-INSTALL_DIR="$HOME/Apps/Battery_Guardian"
-
-DESKTOP_FILE="$HOME/Desktop/${APP_SLUG}.desktop"
-MENU_FILE="$HOME/.local/share/applications/${APP_SLUG}.desktop"
-AUTOSTART_FILE="$HOME/.config/autostart/${APP_SLUG}.desktop"
-BIN_LINK="$HOME/.local/bin/${APP_SLUG}"
-SYSTEMD_FILE="$HOME/.config/systemd/user/${APP_SLUG}.service"
-SUDOERS_FILE="/etc/sudoers.d/battery-guardian"
-CONFIG_DIR="$HOME/.config/battery_guardian"
-
-# Colores
 GREEN="\033[0;32m"
 RED="\033[0;31m"
 YELLOW="\033[1;33m"
@@ -37,193 +14,148 @@ BOLD="\033[1m"
 NC="\033[0m"
 
 print_ok()   { echo -e "   [${GREEN}✓${NC}] $1"; }
-print_fail() { echo -e "   [${RED}✗${NC}] $1"; }
 print_warn() { echo -e "   [${YELLOW}⚠${NC}] $1"; }
 print_info() { echo -e "   [i] $1"; }
 
+# ---------------------------------------------------------
+#  Rutas (mismas que install.sh)
+# ---------------------------------------------------------
+APPS_DIR="/home/asus/Apps"
+APP_NAME="Battery Guardian"
+APP_SLUG="battery-guardian"
+INSTALL_DIR="$APPS_DIR/Battery_Guardian"
+
+if [ -d "$HOME/Escritorio" ]; then
+    DESKTOP_DIR="$HOME/Escritorio"
+elif [ -d "$HOME/Desktop" ]; then
+    DESKTOP_DIR="$HOME/Desktop"
+else
+    DESKTOP_DIR="$HOME"
+fi
+DESKTOP_FILE="$DESKTOP_DIR/${APP_SLUG}.desktop"
+MENU_FILE="$HOME/.local/share/applications/${APP_SLUG}.desktop"
+AUTOSTART_FILE="$HOME/.config/autostart/${APP_SLUG}.desktop"
+BIN_LINK="$HOME/.local/bin/${APP_SLUG}"
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+SYSTEMD_FILE="$SYSTEMD_USER_DIR/${APP_SLUG}.service"
+ICON_USER="$HOME/.local/share/icons/${APP_SLUG}.png"
+
+SUDOERS_FILE="/etc/sudoers.d/battery-guardian"
+
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  🔋 Desinstalando $APP_NAME v2.2.9${NC}"
+echo -e "${BOLD}  🗑️  Desinstalando $APP_NAME${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
+echo "  Se eliminará ÚNICAMENTE: $INSTALL_DIR"
 echo ""
 
+read -r -p "¿Estás seguro de que quieres desinstalar $APP_NAME? (s/N): " confirm
+if [[ ! "$confirm" =~ ^[sS]$ ]]; then
+    echo "Desinstalación cancelada."
+    exit 0
+fi
 
 # =========================================================
-#  1) Detener y deshabilitar servicio systemd
+#  1) Detener y eliminar servicio systemd
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [1/8] Deteniendo servicio systemd...${NC}"
+echo -e "${BLUE}${BOLD}▶ [1/8] Deteniendo y eliminando servicio systemd...${NC}"
 if systemctl --user list-unit-files 2>/dev/null | grep -q "${APP_SLUG}.service"; then
-    systemctl --user stop "${APP_SLUG}.service" 2>/dev/null || true
+    systemctl --user stop    "${APP_SLUG}.service" 2>/dev/null || true
     systemctl --user disable "${APP_SLUG}.service" 2>/dev/null || true
-    print_ok "Servicio detenido y deshabilitado"
-else
-    echo "   (no había servicio systemd)"
 fi
+[ -f "$SYSTEMD_FILE" ] && rm -f "$SYSTEMD_FILE" && print_ok "Servicio eliminado: $SYSTEMD_FILE"
+systemctl --user daemon-reload 2>/dev/null || true
+systemctl --user reset-failed 2>/dev/null || true
+
+# Matar cualquier proceso residual de esta app
+pkill -9 -f "battery_guardian.py" 2>/dev/null || true
+print_ok "Procesos residuales detenidos"
 echo ""
 
-
 # =========================================================
-#  2) Matar procesos residuales
+#  2) Eliminar accesos directos
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [2/8] Matando procesos residuales...${NC}"
-if pgrep -f "battery_guardian.py" &>/dev/null; then
-    pkill -9 -f "battery_guardian.py" 2>/dev/null || true
-    sleep 1
-    print_ok "Procesos detenidos"
-else
-    echo "   (no había procesos activos)"
-fi
+echo -e "${BLUE}${BOLD}▶ [2/8] Eliminando accesos directos...${NC}"
+rm -f "$DESKTOP_FILE"
+rm -f "$MENU_FILE"
+rm -f "$AUTOSTART_FILE"
+rm -f "$HOME/Escritorio/${APP_SLUG}.desktop"
+rm -f "$HOME/Desktop/${APP_SLUG}.desktop"
+update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+print_ok "Accesos directos eliminados"
 echo ""
 
-
 # =========================================================
-#  3) Eliminar archivo del servicio systemd
+#  3) Eliminar enlace CLI
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [3/8] Eliminando archivo del servicio systemd...${NC}"
-if [ -f "$SYSTEMD_FILE" ]; then
-    rm -f "$SYSTEMD_FILE"
-    systemctl --user daemon-reload
-    print_ok "$SYSTEMD_FILE eliminado"
-else
-    echo "   (no existía)"
-fi
-echo ""
-
-
-# =========================================================
-#  4) Eliminar archivo sudoers
-# =========================================================
-echo -e "${BLUE}${BOLD}▶ [4/8] Eliminando archivo sudoers...${NC}"
-if [ -f "$SUDOERS_FILE" ]; then
-    sudo rm -f "$SUDOERS_FILE"
-    print_ok "$SUDOERS_FILE eliminado"
-else
-    echo "   (no existía)"
-fi
-echo ""
-
-
-# =========================================================
-#  5) Eliminar accesos directos y enlaces
-# =========================================================
-echo -e "${BLUE}${BOLD}▶ [5/8] Eliminando accesos directos...${NC}"
-if [ -f "$DESKTOP_FILE" ]; then
-    rm -f "$DESKTOP_FILE"
-    print_ok "Icono del escritorio eliminado"
-else
-    echo "   (sin icono en el escritorio)"
-fi
-
-if [ -f "$MENU_FILE" ]; then
-    rm -f "$MENU_FILE"
-    print_ok "Entrada del menú eliminada"
-else
-    echo "   (sin entrada en el menú)"
-fi
-
-if [ -f "$AUTOSTART_FILE" ]; then
-    rm -f "$AUTOSTART_FILE"
-    print_ok "Autostart eliminado"
-else
-    echo "   (sin autostart)"
-fi
-
+echo -e "${BLUE}${BOLD}▶ [3/8] Eliminando enlace CLI...${NC}"
 if [ -L "$BIN_LINK" ] || [ -f "$BIN_LINK" ]; then
     rm -f "$BIN_LINK"
-    print_ok "Enlace CLI eliminado"
-else
-    echo "   (sin enlace CLI)"
+    print_ok "$BIN_LINK"
 fi
-
-update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
 echo ""
 
+# =========================================================
+#  4) Eliminar icono de usuario
+# =========================================================
+echo -e "${BLUE}${BOLD}▶ [4/8] Eliminando icono...${NC}"
+[ -f "$ICON_USER" ] && rm -f "$ICON_USER" && print_ok "$ICON_USER"
+if command -v gtk-update-icon-cache &>/dev/null; then
+    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/" 2>/dev/null || true
+fi
+echo ""
 
 # =========================================================
-#  6) Eliminar carpeta de instalación (venv + código)
+#  5) Eliminar sudoers (con confirmación extra)
+# =========================================================
+echo -e "${BLUE}${BOLD}▶ [5/8] Eliminando regla de sudoers...${NC}"
+if [ -f "$SUDOERS_FILE" ]; then
+    read -r -p "  ¿Eliminar $SUDOERS_FILE? [S/n]: " RESP_SUDO
+    if [[ "$RESP_SUDO" =~ ^[nN]$ ]]; then
+        print_warn "Sudoers conservado. Elimínalo manualmente si quieres."
+    else
+        sudo rm -f "$SUDOERS_FILE"
+        print_ok "Sudoers eliminado"
+    fi
+else
+    print_info "No existía $SUDOERS_FILE"
+fi
+echo ""
+
+# =========================================================
+#  6) Eliminar SOLO la subcarpeta del programa
 # =========================================================
 echo -e "${BLUE}${BOLD}▶ [6/8] Eliminando carpeta de instalación...${NC}"
 if [ -d "$INSTALL_DIR" ]; then
     rm -rf "$INSTALL_DIR"
-    print_ok "$INSTALL_DIR eliminada (incluye venv)"
+    print_ok "$INSTALL_DIR"
 else
-    echo "   (no existía)"
+    print_warn "No se encontró $INSTALL_DIR"
 fi
-
-if [ -d "$HOME/Apps" ] && [ -z "$(ls -A "$HOME/Apps" 2>/dev/null)" ]; then
-    rmdir "$HOME/Apps" 2>/dev/null && print_ok "$HOME/Apps (vacía) eliminada"
-fi
+# ⚠️  NO se borra $APPS_DIR porque puede contener otros programas.
 echo ""
 
-
 # =========================================================
-#  7) Configuración del usuario (opcional)
+#  7) Preguntar si eliminar dependencias recomendadas
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [7/8] Configuración del usuario...${NC}"
-if [ -d "$CONFIG_DIR" ]; then
-    echo "   ⚙  Configuración en: $CONFIG_DIR"
-    read -r -p "   ¿Eliminar también la configuración y los logs? (s/N): " RESP
-    if [[ "$RESP" =~ ^[sS]$ ]]; then
-        rm -rf "$CONFIG_DIR"
-        print_ok "Configuración eliminada"
-    else
-        echo "   → Conservada en $CONFIG_DIR"
-    fi
-else
-    echo "   (no había configuración guardada)"
-fi
+echo -e "${BLUE}${BOLD}▶ [7/8] Dependencias recomendadas (opcional)...${NC}"
+print_info "xprintidle, xdotool, x11-utils NO se eliminan automáticamente."
+print_info "Si quieres quitarlas: sudo apt remove xprintidle xdotool x11-utils"
 echo ""
 
-
 # =========================================================
-#  8) Verificación final (restos)
+#  8) Resumen
 # =========================================================
-echo -e "${BLUE}${BOLD}▶ [8/8] Verificando restos...${NC}"
-LEFTOVERS=0
-
-if [ -d "$INSTALL_DIR" ]; then
-    print_warn "Resto: $INSTALL_DIR"
-    LEFTOVERS=1
-fi
-if [ -f "$DESKTOP_FILE" ]; then
-    print_warn "Resto: $DESKTOP_FILE"
-    LEFTOVERS=1
-fi
-if [ -f "$MENU_FILE" ]; then
-    print_warn "Resto: $MENU_FILE"
-    LEFTOVERS=1
-fi
-if [ -f "$AUTOSTART_FILE" ]; then
-    print_warn "Resto: $AUTOSTART_FILE"
-    LEFTOVERS=1
-fi
-if [ -L "$BIN_LINK" ]; then
-    print_warn "Resto: $BIN_LINK"
-    LEFTOVERS=1
-fi
-if [ -f "$SYSTEMD_FILE" ]; then
-    print_warn "Resto: $SYSTEMD_FILE"
-    LEFTOVERS=1
-fi
-if [ -f "$SUDOERS_FILE" ]; then
-    print_warn "Resto: $SUDOERS_FILE"
-    LEFTOVERS=1
-fi
-
-if [ $LEFTOVERS -eq 0 ]; then
-    print_ok "Sin restos"
-fi
-echo ""
-
-
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}${BOLD}  ✅ Desinstalación completada${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
 echo ""
-echo "  📌 Notas:"
-echo "      - Las dependencias del sistema (xdotool, x11-utils,"
-echo "        xprintidle, python3-tk, upower) NO se eliminan"
-echo "        porque pueden ser usadas por otros programas."
-echo "      - Si quieres eliminarlas manualmente:"
-echo "          sudo apt remove xdotool x11-utils xprintidle"
+echo "  Se eliminaron:"
+echo "    - Servicio systemd --user (${APP_SLUG}.service)"
+echo "    - Lanzadores .desktop (menú, escritorio, autostart)"
+echo "    - Enlace CLI en ~/.local/bin/"
+echo "    - Icono en ~/.local/share/icons/"
+echo "    - $INSTALL_DIR (código, venv, install.sh, uninstall.sh, etc.)"
+echo ""
+echo "  Los demás programas en $APPS_DIR NO fueron afectados."
 echo ""
