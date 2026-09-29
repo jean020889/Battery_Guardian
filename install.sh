@@ -1,40 +1,36 @@
 
+
 #!/bin/bash
 # =========================================================
-#  Battery Guardian - Instalador v2.2.9
-# =========================================================
-#  Instala el programa en un entorno virtual (venv) en:
-#      ~/Apps/Battery_Guardian/
-#  Y crea:
-#      - Icono en el escritorio (battery_guardian_icon.png)
-#      - Entrada en el menú de aplicaciones
-#      - Servicio systemd --user (arranque automático + auto-reinicio)
-#      - Enlace CLI en ~/.local/bin
-#      - Configuración de sudoers para auto-apagado sin contraseña
-#
-#  COPIA ADEMÁS:
-#      - install.sh, uninstall.sh (para reinstalar desde la carpeta)
-#      - LICENSE / LICENSE.md / LICENCE / LICENCE.md
-#      - README.md, Installation_instructions.md, requirements.txt
-#      - .gitignore
-#
-#  DETECTA dependencias faltantes y pide permiso para instalarlas:
-#      - python3, python3-venv, python3-tk, upower  (OBLIGATORIAS)
-#      - xprintidle, xdotool, x11-utils            (RECOMENDADAS)
+#  Battery Guardian - Instalador v2.2.9 (adaptado)
+#  Instala en: /home/asus/Apps/Battery_Guardian
 # =========================================================
 set -e
 
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ---------------------------------------------------------
+#  Rutas
+# ---------------------------------------------------------
+APPS_DIR="/home/asus/Apps"
 APP_NAME="Battery Guardian"
 APP_SLUG="battery-guardian"
-INSTALL_DIR="$HOME/Apps/Battery_Guardian"
+INSTALL_DIR="$APPS_DIR/Battery_Guardian"
 VENV_DIR="$INSTALL_DIR/venv"
 APP_FILE="$INSTALL_DIR/battery_guardian.py"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ICON_SRC="$PROJECT_DIR/battery_guardian_icon.png"
 ICON_DST="$INSTALL_DIR/battery_guardian_icon.png"
 LAUNCHER="$INSTALL_DIR/run.sh"
 
-DESKTOP_FILE="$HOME/Desktop/${APP_SLUG}.desktop"
+# Detectar carpeta de escritorio (Español o Inglés)
+if [ -d "$HOME/Escritorio" ]; then
+    DESKTOP_DIR="$HOME/Escritorio"
+elif [ -d "$HOME/Desktop" ]; then
+    DESKTOP_DIR="$HOME/Desktop"
+else
+    DESKTOP_DIR="$HOME"
+fi
+DESKTOP_FILE="$DESKTOP_DIR/${APP_SLUG}.desktop"
+
 MENU_FILE="$HOME/.local/share/applications/${APP_SLUG}.desktop"
 AUTOSTART_FILE="$HOME/.config/autostart/${APP_SLUG}.desktop"
 BIN_LINK="$HOME/.local/bin/${APP_SLUG}"
@@ -65,7 +61,6 @@ echo -e "  Origen:  $PROJECT_DIR"
 echo -e "  Destino: $INSTALL_DIR"
 echo ""
 
-
 # =========================================================
 #  1) DETECTAR DEPENDENCIAS
 # =========================================================
@@ -73,7 +68,6 @@ echo -e "${BLUE}${BOLD}▶ [1/14] Comprobando dependencias del sistema...${NC}"
 echo ""
 
 MISSING_REQUIRED=()
-
 if command -v python3 &>/dev/null; then
     print_ok "python3 → $(python3 --version 2>&1)"
 else
@@ -103,45 +97,15 @@ else
 fi
 
 MISSING_RECOMMENDED=()
-
-if command -v xprintidle &>/dev/null; then
-    print_ok "xprintidle (detección de inactividad)"
-else
-    print_warn "xprintidle → NO INSTALADO (necesario para auto-apagado)"
-    MISSING_RECOMMENDED+=("xprintidle")
-fi
-
-if command -v xdotool &>/dev/null; then
-    print_ok "xdotool (detección de ventanas/reproductores)"
-else
-    print_warn "xdotool → NO INSTALADO (necesario para detectar VLC/navegador)"
-    MISSING_RECOMMENDED+=("xdotool")
-fi
-
-if command -v xprop &>/dev/null; then
-    print_ok "x11-utils (xprop para pantalla completa)"
-else
-    print_warn "x11-utils → NO INSTALADO"
-    MISSING_RECOMMENDED+=("x11-utils")
-fi
+command -v xprintidle &>/dev/null && print_ok "xprintidle" || { print_warn "xprintidle → NO INSTALADO"; MISSING_RECOMMENDED+=("xprintidle"); }
+command -v xdotool    &>/dev/null && print_ok "xdotool"    || { print_warn "xdotool → NO INSTALADO";    MISSING_RECOMMENDED+=("xdotool"); }
+command -v xprop      &>/dev/null && print_ok "x11-utils (xprop)" || { print_warn "x11-utils → NO INSTALADO"; MISSING_RECOMMENDED+=("x11-utils"); }
 
 echo ""
 print_info "Otras dependencias opcionales:"
-
-if command -v pactl &>/dev/null; then
-    print_ok "pactl (detección de multimedia)"
-else
-    print_warn "pactl → no instalado (viene con PulseAudio/PipeWire)"
-fi
-
-if command -v paplay &>/dev/null; then
-    print_ok "paplay (reproducción del pitido)"
-else
-    print_warn "paplay → no instalado (instala pulseaudio-utils)"
-fi
-
+command -v pactl  &>/dev/null && print_ok "pactl"  || print_warn "pactl → no instalado"
+command -v paplay &>/dev/null && print_ok "paplay" || print_warn "paplay → no instalado"
 echo ""
-
 
 # =========================================================
 #  2) OFRECER INSTALAR DEPENDENCIAS FALTANTES
@@ -153,27 +117,22 @@ if [ ${#ALL_MISSING[@]} -gt 0 ]; then
     echo -e "${YELLOW}${BOLD}  ⚠  Faltan dependencias${NC}"
     echo -e "${BOLD}═══════════════════════════════════════════════════════${NC}"
     echo ""
-    if [ ${#MISSING_REQUIRED[@]} -gt 0 ]; then
+    [ ${#MISSING_REQUIRED[@]} -gt 0 ] && {
         echo -e "  ${RED}${BOLD}OBLIGATORIAS:${NC}"
-        for pkg in "${MISSING_REQUIRED[@]}"; do
-            echo "    - $pkg"
-        done
+        for pkg in "${MISSING_REQUIRED[@]}"; do echo "    - $pkg"; done
         echo ""
-    fi
-    if [ ${#MISSING_RECOMMENDED[@]} -gt 0 ]; then
+    }
+    [ ${#MISSING_RECOMMENDED[@]} -gt 0 ] && {
         echo -e "  ${YELLOW}${BOLD}RECOMENDADAS:${NC}"
-        for pkg in "${MISSING_RECOMMENDED[@]}"; do
-            echo "    - $pkg"
-        done
+        for pkg in "${MISSING_RECOMMENDED[@]}"; do echo "    - $pkg"; done
         echo ""
-    fi
+    }
 
     if [ ${#MISSING_REQUIRED[@]} -gt 0 ]; then
         echo -e "  Se pueden instalar automáticamente con:"
         echo -e "      ${BOLD}sudo apt update && sudo apt install ${ALL_MISSING[*]}${NC}"
         echo ""
         read -r -p "  ¿Quieres que las instale ahora? [s/N]: " RESP
-
         if [[ "$RESP" =~ ^[sS]$ ]]; then
             echo ""
             echo -e "${BLUE}${BOLD}▶ [2/14] Actualizando repositorios (apt update)...${NC}"
@@ -185,23 +144,19 @@ if [ ${#ALL_MISSING[@]} -gt 0 ]; then
                 print_ok "Dependencias instaladas"
             else
                 print_fail "Falló la instalación"
-                echo "  sudo apt install ${ALL_MISSING[*]}"
                 exit 1
             fi
             echo ""
         else
-            echo ""
             print_fail "No se pueden instalar las dependencias obligatorias."
             echo "  Instálalas manualmente y vuelve a ejecutar ./install.sh:"
-            echo "      sudo apt update"
-            echo "      sudo apt install ${ALL_MISSING[*]}"
+            echo "      sudo apt update && sudo apt install ${ALL_MISSING[*]}"
             exit 1
         fi
     else
         echo -e "  Se pueden instalar con: ${BOLD}sudo apt install ${MISSING_RECOMMENDED[*]}${NC}"
         echo ""
         read -r -p "  ¿Quieres instalarlas ahora? [s/N]: " RESP
-
         if [[ "$RESP" =~ ^[sS]$ ]]; then
             sudo apt update 2>/dev/null || true
             sudo apt install -y "${MISSING_RECOMMENDED[@]}" \
@@ -218,23 +173,15 @@ else
     echo ""
 fi
 
-
 # =========================================================
 #  4) Comprobar archivos del proyecto
 # =========================================================
 echo -e "${BLUE}${BOLD}▶ [4/14] Comprobando archivos del proyecto...${NC}"
 
-if [ ! -f "$ICON_SRC" ]; then
-    print_fail "No se encontró el icono:"
-    echo "       $ICON_SRC"
-    exit 1
-fi
+[ ! -f "$ICON_SRC" ] && { print_fail "No se encontró el icono: $ICON_SRC"; exit 1; }
 print_ok "Icono: battery_guardian_icon.png"
 
-if [ ! -f "$PROJECT_DIR/battery_guardian.py" ]; then
-    print_fail "Falta battery_guardian.py"
-    exit 1
-fi
+[ ! -f "$PROJECT_DIR/battery_guardian.py" ] && { print_fail "Falta battery_guardian.py"; exit 1; }
 print_ok "Programa: battery_guardian.py"
 
 LICENSE_SRC=""
@@ -244,17 +191,11 @@ for candidate in LICENSE.md LICENSE LICENCE.md LICENCE license.md license; do
         break
     fi
 done
-
-if [ -n "$LICENSE_SRC" ]; then
-    print_ok "Licencia: $(basename "$LICENSE_SRC")"
-else
-    print_warn "Sin licencia (no se copiará)"
-fi
+[ -n "$LICENSE_SRC" ] && print_ok "Licencia: $(basename "$LICENSE_SRC")" || print_warn "Sin licencia"
 echo ""
 
-
 # =========================================================
-#  5) Detener instancia antigua
+#  5) Detener instancia antigua (SOLO de esta app)
 # =========================================================
 echo -e "${BLUE}${BOLD}▶ [5/14] Deteniendo instancias antiguas...${NC}"
 if systemctl --user list-unit-files 2>/dev/null | grep -q "${APP_SLUG}.service"; then
@@ -266,53 +207,36 @@ sleep 1
 print_ok "Sin instancias activas"
 echo ""
 
+# =========================================================
+#  6) Eliminar SOLO la subcarpeta del programa si existe
+# =========================================================
+if [ -d "$INSTALL_DIR" ]; then
+    echo -e "${YELLOW}El directorio $INSTALL_DIR ya existe. Eliminando instalación anterior...${NC}"
+    rm -rf "$INSTALL_DIR"
+fi
 
 # =========================================================
-#  6) Crear carpeta de instalación
+#  7) Crear carpeta y copiar TODO
 # =========================================================
 echo -e "${BLUE}${BOLD}▶ [6/14] Creando carpeta de instalación...${NC}"
 mkdir -p "$INSTALL_DIR"
 print_ok "$INSTALL_DIR"
 echo ""
 
+echo -e "${BLUE}${BOLD}▶ [7/14] Copiando TODOS los archivos del proyecto...${NC}"
+tar --exclude='./venv' \
+    --exclude='./.git' \
+    --exclude='./__pycache__' \
+    --exclude='./.idea' \
+    --exclude='./.vscode' \
+    --exclude='./*.pyc' \
+    -cf - -C "$PROJECT_DIR" . | (cd "$INSTALL_DIR" && tar -xf -)
 
-# =========================================================
-#  7) Copiar archivos
-# =========================================================
-echo -e "${BLUE}${BOLD}▶ [7/14] Copiando archivos...${NC}"
-
-cp -f "$PROJECT_DIR/battery_guardian.py" "$APP_FILE"
-chmod +x "$APP_FILE"
-print_ok "battery_guardian.py"
-
-cp -f "$ICON_SRC" "$ICON_DST"
-print_ok "battery_guardian_icon.png"
-
-if [ -f "$PROJECT_DIR/install.sh" ]; then
-    cp -f "$PROJECT_DIR/install.sh" "$INSTALL_DIR/install.sh"
-    chmod +x "$INSTALL_DIR/install.sh"
-    print_ok "install.sh"
-fi
-
-if [ -f "$PROJECT_DIR/uninstall.sh" ]; then
-    cp -f "$PROJECT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
-    chmod +x "$INSTALL_DIR/uninstall.sh"
-    print_ok "uninstall.sh"
-fi
-
-if [ -n "$LICENSE_SRC" ]; then
-    cp -f "$LICENSE_SRC" "$INSTALL_DIR/$(basename "$LICENSE_SRC")"
-    print_ok "$(basename "$LICENSE_SRC")"
-fi
-
-[ -f "$PROJECT_DIR/requirements.txt" ] && cp -f "$PROJECT_DIR/requirements.txt" "$INSTALL_DIR/" && print_ok "requirements.txt"
-[ -f "$PROJECT_DIR/README.md" ]        && cp -f "$PROJECT_DIR/README.md"        "$INSTALL_DIR/" && print_ok "README.md"
-[ -f "$PROJECT_DIR/Installation_instructions.md" ] && \
-    cp -f "$PROJECT_DIR/Installation_instructions.md" "$INSTALL_DIR/" && print_ok "Installation_instructions.md"
-[ -f "$PROJECT_DIR/.gitignore" ]       && cp -f "$PROJECT_DIR/.gitignore"       "$INSTALL_DIR/" && print_ok ".gitignore"
-
+chmod +x "$APP_FILE" 2>/dev/null || true
+[ -f "$INSTALL_DIR/install.sh" ]   && chmod +x "$INSTALL_DIR/install.sh"   && print_ok "install.sh"
+[ -f "$INSTALL_DIR/uninstall.sh" ] && chmod +x "$INSTALL_DIR/uninstall.sh" && print_ok "uninstall.sh"
+print_ok "Archivos copiados"
 echo ""
-
 
 # =========================================================
 #  8) Crear entorno virtual
@@ -325,7 +249,6 @@ echo -e "${BLUE}${BOLD}▶ [8/14] Creando entorno virtual...${NC}"
 print_ok "venv: $("$VENV_DIR/bin/python" --version 2>&1)"
 echo ""
 
-
 # =========================================================
 #  9) Instalar dependencias Python en el venv
 # =========================================================
@@ -337,7 +260,6 @@ echo -e "${BLUE}${BOLD}▶ [9/14] Instalando dependencias Python en el venv...${
 "$VENV_DIR/bin/python" -c "import pystray" 2>/dev/null && print_ok "pystray" || print_warn "pystray"
 "$VENV_DIR/bin/python" -c "import PIL"     2>/dev/null && print_ok "Pillow"  || print_warn "Pillow"
 echo ""
-
 
 # =========================================================
 #  10) Crear lanzador
@@ -356,12 +278,16 @@ ln -sf "$LAUNCHER" "$BIN_LINK"
 print_ok "Enlace CLI: $BIN_LINK"
 echo ""
 
-
 # =========================================================
 #  11) Accesos directos
 # =========================================================
 echo -e "${BLUE}${BOLD}▶ [11/14] Creando accesos directos...${NC}"
-mkdir -p "$HOME/Desktop"
+
+# Icono a ~/.local/share/icons para que el sistema lo reconozca
+mkdir -p "$HOME/.local/share/icons"
+cp -f "$ICON_DST" "$HOME/.local/share/icons/${APP_SLUG}.png" 2>/dev/null || true
+
+mkdir -p "$DESKTOP_DIR"
 cat > "$DESKTOP_FILE" << DESKTOP
 [Desktop Entry]
 Version=1.0
@@ -370,6 +296,7 @@ Name=$APP_NAME
 GenericName=Battery Care
 Comment=Cuida la salud de la batería de tu portátil
 Exec=$LAUNCHER
+Path=$INSTALL_DIR
 Icon=$ICON_DST
 Terminal=false
 Categories=Utility;System;
@@ -384,7 +311,6 @@ cp -f "$DESKTOP_FILE" "$MENU_FILE"
 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
 print_ok "Menú: $MENU_FILE"
 echo ""
-
 
 # =========================================================
 #  12) Servicio systemd
@@ -418,7 +344,6 @@ systemctl --user enable "${APP_SLUG}.service"
 systemctl --user start  "${APP_SLUG}.service" || true
 print_ok "Servicio systemd configurado (retardo 20 s)"
 echo ""
-
 
 # =========================================================
 #  13) Configurar sudoers
@@ -455,7 +380,6 @@ else
         rm -f "$TMP_SUDOERS"
         print_ok "Creado: $SUDOERS_FILE"
 
-        # Verificar
         if sudo -n "$REAL_SYSTEMCTL" poweroff --help &>/dev/null; then
             print_ok "Verificado: sudo -n systemctl poweroff funciona"
         elif sudo -n "$REAL_POWEROFF" --help &>/dev/null; then
@@ -467,7 +391,6 @@ else
 fi
 echo ""
 
-
 # =========================================================
 #  14) Verificación final
 # =========================================================
@@ -477,21 +400,15 @@ echo "   📂 Contenido de $INSTALL_DIR:"
 ls -lh "$INSTALL_DIR" | grep -v "^total" | awk '{printf "      %-40s %s\n", $9, $5}'
 echo ""
 
-if systemctl --user is-active --quiet "${APP_SLUG}.service"; then
-    print_ok "Servicio systemd ACTIVO"
-else
-    print_warn "Servicio NO activo"
-fi
+systemctl --user is-active --quiet "${APP_SLUG}.service" \
+    && print_ok "Servicio systemd ACTIVO" \
+    || print_warn "Servicio NO activo"
 
-[ -f "$SUDOERS_FILE" ] && print_ok "Sudoers configurado" \
-                       || print_warn "Sudoers NO configurado"
+[ -f "$SUDOERS_FILE" ] && print_ok "Sudoers configurado" || print_warn "Sudoers NO configurado"
 
-command -v xprintidle &>/dev/null && print_ok "xprintidle OK" \
-                                   || print_warn "xprintidle NO instalado"
-command -v xdotool &>/dev/null    && print_ok "xdotool OK" \
-                                   || print_warn "xdotool NO instalado"
-command -v xprop &>/dev/null      && print_ok "xprop OK" \
-                                   || print_warn "xprop NO instalado"
+command -v xprintidle &>/dev/null && print_ok "xprintidle OK" || print_warn "xprintidle NO instalado"
+command -v xdotool    &>/dev/null && print_ok "xdotool OK"    || print_warn "xdotool NO instalado"
+command -v xprop      &>/dev/null && print_ok "xprop OK"      || print_warn "xprop NO instalado"
 echo ""
 
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
@@ -515,10 +432,9 @@ echo "      - Menú → '$APP_NAME'"
 echo "      - Terminal:  $APP_SLUG"
 echo ""
 echo "  🧪 Diagnóstico:"
-echo "      $APP_SLUG --info         # Ver estado"
+echo "      $APP_SLUG --info"
 echo "      cd $INSTALL_DIR && ./venv/bin/python battery_guardian.py --debug"
 echo ""
 echo "  🗑️  Desinstalar:"
 echo "      $INSTALL_DIR/uninstall.sh"
-echo "      (o $PROJECT_DIR/uninstall.sh)"
 echo ""
